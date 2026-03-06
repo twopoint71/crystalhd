@@ -37,6 +37,8 @@
 #include <linux/delay.h>
 #include <linux/fb.h>
 #include <linux/pci.h>
+#include <linux/dma-mapping.h>
+#include <linux/dmapool.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/pagemap.h>
@@ -83,11 +85,16 @@ struct crystalhd_adp {
 	struct crystalhd_cmd	cmds;
 
 	struct crystalhd_dio_req	*ua_map_free_head;
-	struct pci_pool		*fill_byte_pool;
+	struct dma_pool		*fill_byte_pool;
 };
 
 
 struct crystalhd_adp *chd_get_adp(void);
 struct device *chddev(void);
+crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr);
+void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,
+			 bool isr);
+int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state);
+int chd_dec_pci_resume(struct pci_dev *pdev);
 
 #endif

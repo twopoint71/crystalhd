@@ -31,8 +31,7 @@
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
 #include <linux/sched/signal.h>
 #endif
-#include <asm/tsc.h>
-#include <asm/msr.h>
+#include <linux/ktime.h>
 #include "crystalhd_hw.h"
 #include "crystalhd_fleafuncs.h"
 #include "crystalhd_lnx.h"
@@ -41,7 +40,7 @@
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
 
-void crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+static void crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 {
 	unsigned int pollCnt=0,regVal=0;
 
@@ -81,7 +80,7 @@ void crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 	return;
 }
 
-void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
+static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
 {
 	union FLEA_INTR_BITS_COMMON IntrMaskReg;
 	/*
@@ -98,7 +97,7 @@ void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
 	return;
 }
 
-void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw)
+static void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw)
 {
 	union FLEA_INTR_BITS_COMMON IntrMaskReg;
 	/*
@@ -115,7 +114,7 @@ void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw)
 	return;
 }
 
-void crystalhd_flea_clear_interrupts(struct crystalhd_hw *hw)
+static void crystalhd_flea_clear_interrupts(struct crystalhd_hw *hw)
 {
 	union FLEA_INTR_BITS_COMMON	IntrStsValue;
 
@@ -130,7 +129,7 @@ void crystalhd_flea_clear_interrupts(struct crystalhd_hw *hw)
 	return;
 }
 
-bool crystalhd_flea_detect_ddr3(struct crystalhd_hw *hw)
+static bool crystalhd_flea_detect_ddr3(struct crystalhd_hw *hw)
 {
 	uint32_t regVal = 0;
 
@@ -168,7 +167,7 @@ bool crystalhd_flea_detect_ddr3(struct crystalhd_hw *hw)
 	return false;
 }
 
-void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
+static void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 {
 	int32_t ddr2_speed_grade[2];
 	uint32_t sd_0_col_size, sd_0_bank_size, sd_0_row_size;
@@ -513,7 +512,7 @@ void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 
 	/*printk("RT Power Up Flea Complete\n"); */
 
-	rdtscll(currTick);
+	currTick = ktime_get_ns();
 
 	hw->TickSpentInPD += (currTick - hw->TickStartInPD);
 
@@ -735,12 +734,12 @@ void crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 	/*printk("RT Power Down Flea Complete\n"); */
 
 	/* Measure how much time we spend in idle */
-	rdtscll(hw->TickStartInPD);
+	hw->TickStartInPD = ktime_get_ns();
 
 	return;
 }
 
-bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
 {
 	uint32_t pollCnt		= 0;
 	uint32_t hbCnt			= 0;
@@ -774,7 +773,7 @@ bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
 	return bRetVal;
 }
 
-void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
+static void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
 {
 	uint32_t	newChBitmap=0;
 
@@ -792,7 +791,7 @@ void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
 	}
 }
 
-void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
+static void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
 {
 	TX_INPUT_BUFFER_INFO	TxBuffInfo;
 	uint32_t ReadSzInDWords=0;
@@ -1092,7 +1091,7 @@ void crystalhd_flea_set_rx_pic_fire_addr(struct crystalhd_hw *hw, uint32_t Borsh
 }
 #endif
 
-void crystalhd_flea_init_temperature_measure (struct crystalhd_hw *hw, bool bTurnOn)
+static void crystalhd_flea_init_temperature_measure (struct crystalhd_hw *hw, bool bTurnOn)
 {
 	hw->TemperatureRegVal=0;
 
@@ -1107,7 +1106,7 @@ void crystalhd_flea_init_temperature_measure (struct crystalhd_hw *hw, bool bTur
 }
 
 /* was HwFleaUpdateTempInfo */
-void crystalhd_flea_update_temperature(struct crystalhd_hw *hw)
+static void crystalhd_flea_update_temperature(struct crystalhd_hw *hw)
 {
 	uint32_t	regVal = 0;
 
@@ -1621,8 +1620,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 	return true;
 }
 
-bool
-crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
+static bool crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
 {
 	if(hw->FleaPowerState != FLEA_PS_ACTIVE)
 	{
@@ -1753,7 +1751,7 @@ bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz
 	return false; /*Indicate Empty*/
 }
 
-BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
+static BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 	struct DecRspChannelStartVideo *st_rsp = NULL;
@@ -1956,7 +1954,7 @@ bool crystalhd_flea_peek_next_decoded_frame(struct crystalhd_hw *hw, uint64_t *m
 
 }
 
-void crystalhd_flea_clear_rx_errs_intrs(struct crystalhd_hw *hw)
+static void crystalhd_flea_clear_rx_errs_intrs(struct crystalhd_hw *hw)
 /*
 -- Clears all the errors and interrupt on RX DMA engine.
 */
@@ -2055,7 +2053,7 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 	crystalhd_flea_clear_rx_errs_intrs(hw);
 }
 
-BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
+static BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 									   struct crystalhd_rx_dma_pkt *rx_pkt)
 {
 	struct device *dev;
@@ -2874,7 +2872,7 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 		hw->PDRatio = 0; /* NAREN - reset PD ratio to start measuring for new clip */
 		hw->PauseThreshold = hw->DefaultPauseThreshold;
 		hw->TickSpentInPD = 0;
-		rdtscll(hw->TickCntDecodePU);
+		hw->TickCntDecodePU = ktime_get_ns();
 
 		dev_dbg(dev, "[FMT CH] DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
 			rx_pkt->dio_req->uinfo.y_done_sz * 4,

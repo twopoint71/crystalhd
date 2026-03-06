@@ -27,8 +27,7 @@
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <asm/tsc.h>
-#include <asm/msr.h>
+#include <linux/ktime.h>
 #include "crystalhd_lnx.h"
 #include "crystalhd_linkfuncs.h"
 #include "crystalhd_fleafuncs.h"
@@ -655,7 +654,7 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 					hw->PauseThreshold--;
 				}
 				else {
-					rdtscll(currTick);
+					currTick = ktime_get_ns();
 
 					temp_64 = (hw->TickSpentInPD)>>24;
 					TickSpentInPD_Hi = (uint32_t)(temp_64);

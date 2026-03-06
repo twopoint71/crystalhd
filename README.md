@@ -1,75 +1,100 @@
-# Crystal HD Hardware Decoder Driver on Ubuntu 13.04 Linux kernel 3.8.0-25
-## Broadcom BCM70012 & BCM70015
+# Crystal HD Hardware Decoder Driver
 
-After a lot a retries to get the rigth experience with the Crystal HD on Ubuntu, 
+Out-of-tree DKMS-friendly driver for the Broadcom BCM70012/BCM70015 "Crystal HD"
+hardware decoder. The tree focuses on the kernel module; older user-space samples
+and GStreamer filters now live under `archive/`.
 
-**1. Install required files**
+## Prerequisites
 
-    sudo apt-get install checkinstall git-core autoconf build-essential subversion dpkg-dev fakeroot pbuilder build-essential dh-make debhelper devscripts patchutils quilt git-buildpackage pristine-tar git yasm zlib1g-dev zlib-bin libzip-dev libx11-dev libx11-dev libxv-dev vstream-client-dev libgtk2.0-dev libpulse-dev libxxf86dga-dev x11proto-xf86dga-dev git libgstreamermm-0.10-dev libgstreamer0.10-dev automake libtool python-appindicator 
-    
-**2. Ge the source**
+Install your distro's kernel headers, compiler toolchain, and DKMS tooling. The
+modernized driver has been tested on Linux 6.18/6.19 and keeps compatibility
+paths for kernels down to 4.6, but anything older is untested. For Arch Linux:
 
-Get the driver source code from the git repository.
+```bash
+sudo pacman -S base-devel dkms linux-headers git autoconf
+```
 
-    git clone https://github.com/dbason/crystalhd.git
+For other distributions install the equivalent `gcc`, `make`, `autoconf`,
+`dkms`, and kernel-header packages.
 
-_The original repo source is available at git://git.linuxtv.org/jarod/crystalhd.git_
-    
-**3. Compile driver, install libraries, and load driver**
+## Building the module
 
-Use make command to compile driver. If you have multiple core processor then use the “-j2″ or “-j4″ option (2 or 4 is the number of cores). This will speed up the make process.
+1. Clone and enter the repository:
+   ```bash
+   git clone https://github.com/dbason/crystalhd.git
+   cd crystalhd
+   ```
+2. Generate the makefiles:
+   ```bash
+   cd driver/linux
+   autoconf
+   ./configure --with-kernel-path=/lib/modules/$(uname -r)/build
+   ```
+3. Build against the current kernel tree:
+   ```bash
+   make -C /lib/modules/$(uname -r)/build M=$PWD modules
+   ```
 
-    cd crystalhd/driver/linux
-    autoconf
-    ./configure
-    make -j2
-    sudo make install
-    
-**4. Install the libraries.**
+> **Tip:** If your `/lib/modules/.../build` tree is read-only, copy it into a
+> writable directory and point `./configure --with-kernel-path=/path/to/copy` at
+> that location before running `make`.
 
-    cd ../../linux_lib/libcrystalhd/
-    make -j2
-    sudo make install 
-    
-**5. Load the driver.**
+## Installing without DKMS
 
-    sudo modprobe crystalhd
-    
-**6. Reboot your system** , then check if 'crystalhd' is listed in the output of the following commands.
+From the repository root run:
 
-    lsmod
-    dmesg | grep crystalhd
-    
- Then you should see something like this:
- 
-    [    4.349765] Loading crystalhd v3.10.0
-    [    4.349823] crystalhd 0000:02:00.0: Starting Device:0x1615
-    [    4.351848] crystalhd 0000:02:00.0: irq 43 for MSI/MSI-X
-    [  108.512135] crystalhd 0000:02:00.0: Opening new user[0] handle
-    [  258.976583] crystalhd 0000:02:00.0: Closing user[0] handle via ioctl with mode 10200
+```bash
+sudo make -C driver/linux install
+sudo modprobe crystalhd
+```
 
-Now is time to enjoy our FullHD content. 
+Check `lsmod | grep crystalhd` or `dmesg | grep crystalhd` to confirm the driver
+loaded.
 
-I'm using XMBC , VLC (2.1.0), Mplayer2, GStreamer because they are using (they should) the Crystal HD decoder libraries.
+## Using DKMS
 
-For example , lets try VLC :
+Follow the steps in [README.dkms](README.dkms) to `dkms add`, `build`, and
+`install` the module so it automatically rebuilds for new kernels.
 
-    vlc --codec=crystalhd ourgreatfullhdmedia.mkv
-    
-Now runs smoothly rigth ?
+## Archived components
 
-# After kernel update
+The legacy user-space library, GStreamer filters, and sample applications are no
+longer maintained but have been preserved under the `archive/` directory:
 
-Reinstall the driver.
+- `archive/linux_lib`
+- `archive/filters`
+- `archive/examples`
 
-    cd crystalhd/driver/linux
-    sudo make install
+These projects are optional and not required for building or packaging the
+kernel module.
 
+## Firmware
 
-Btw this instructions referred to http://knowledge.evot.biz/documentation/how-to-compile-and-install-the-broadcom-crystal-hd-hardware-decoder-bcm70012-70015-driver-on-ubuntu and fixed some issues appeared using a patch from M25 user at https://bbs.archlinux.org/viewtopic.php?pid=1253622#p1253622
+The firmware binaries shipped under `firmware/` should be installed automatically
+by `make install` or the DKMS post-install hook. If you need to install them
+manually run `sudo ./install_firmware_dkms.sh` from the repository root.
 
-So, the sources on this repository are updated with the fixes and patches in order to make your life easier.
+## Modern kernel updates
+
+Recent work to keep this driver building on Linux 6.1x includes:
+
+- Switching the module build to the supported `M=<path>` kbuild flow (`driver/linux/Makefile.in`).
+- Updating DMA interactions to the `dma_*` APIs and replacing `get_user_pages()` with
+  `pin_user_pages()`/`unpin_user_pages()` plus scatter/gather mapping via
+  `dma_map_sg()` (see `driver/linux/crystalhd_misc.c`).
+- Using `dma_set_mask_and_coherent()` and `class_create()`'s new signature to silence
+  kernel deprecation errors (`driver/linux/crystalhd_lnx.c`).
+- Replacing `rdtscll()` with `ktime_get_ns()` and marking internal helpers `static`
+  to satisfy modern compilers (`driver/linux/crystalhd_hw.c` and
+  `driver/linux/crystalhd_fleafuncs.c/h`).
+
+If you pick up a newer kernel and hit additional API churn, check the kernel
+`Documentation/process/changes.rst` file and the driver sources above for examples
+of how these transitions were done. Expect best results on kernels 6.1x but the
+compatibility shims should keep everything working back to Linux 4.6.
 
 ## History
 
-See [HISTORY.md](HISTORY.md) for a rough history of the various versions of this driver floating around the web.
+Forked from https://github.com/dbason/crystalhd 
+
+See [HISTORY.md](HISTORY.md) for the background on the various driver versions.

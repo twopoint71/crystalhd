@@ -450,7 +450,11 @@ static int __init chd_dec_init_chdev(struct crystalhd_adp *adp)
 	}
 
 	/* register crystalhd class */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+	crystalhd_class = class_create("crystalhd");
+#else
 	crystalhd_class = class_create(THIS_MODULE, "crystalhd");
+#endif
 	if (IS_ERR(crystalhd_class)) {
 		dev_err(xdev, "failed to create class\n");
 		goto fail;
@@ -667,11 +671,9 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 	}
 
 	/* Set dma mask... */
-	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+	if (!dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))) {
 		pinfo->dmabits = 64;
-	} else if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	} else if (!dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32))) {
 		pinfo->dmabits = 32;
 	} else {
 		dev_err(dev, "%s: Unabled to setup DMA %d\n", __func__, rc);

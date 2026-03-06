@@ -59,4 +59,5 @@ bool crystalhd_flea_notify_event(struct crystalhd_hw *hw, enum BRCM_EVENT EventC
 
 bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * rx_pkt,
 						 uint32_t *PicNumber, uint64_t *PicMetaData);
+uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void *rx_req);
 #endif
