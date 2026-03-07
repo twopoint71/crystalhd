@@ -12,6 +12,7 @@
 
 #include "7411d.h"
 #include "bc_dts_glob_lnx.h"
+#include "bc_dts_defs.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
 
@@ -28,6 +29,11 @@ struct crystalhd_context {
     uint32_t width;
     uint32_t height;
     HANDLE device;
+    bool decoder_open = false;
+    bool decoder_started = false;
+    bool capture_started = false;
+    uint32_t video_algo = BC_VID_ALGO_H264;
+    BC_MEDIA_SUBTYPE media_subtype = BC_MSUBTYPE_INVALID;
 };
 
 struct crystalhd_surface {
@@ -123,6 +129,92 @@ static crystalhd_surface *crystalhd_find_surface(crystalhd_driver_state *drv,
             return &surface;
     }
     return nullptr;
+}
+
+static bool crystalhd_profile_to_algo(VAProfile profile, uint32_t *algo,
+                                      BC_MEDIA_SUBTYPE *subtype)
+{
+    if (!algo || !subtype)
+        return false;
+
+    switch (profile) {
+    case VAProfileH264Main:
+    case VAProfileH264High:
+    case VAProfileH264ConstrainedBaseline:
+        *algo = BC_VID_ALGO_H264;
+        *subtype = BC_MSUBTYPE_H264;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void crystalhd_context_stop_decoder(crystalhd_context &ctx)
+{
+    if (!ctx.device)
+        return;
+
+    if (ctx.capture_started)
+        DtsFlushRxCapture(ctx.device, true);
+
+    if (ctx.decoder_started)
+        DtsStopDecoder(ctx.device);
+
+    if (ctx.decoder_open)
+        DtsCloseDecoder(ctx.device);
+
+    ctx.capture_started = false;
+    ctx.decoder_started = false;
+    ctx.decoder_open = false;
+}
+
+static BC_STATUS crystalhd_context_start_decoder(crystalhd_context &ctx,
+                                                 VAProfile profile)
+{
+    uint32_t algo = 0;
+    BC_MEDIA_SUBTYPE subtype = BC_MSUBTYPE_INVALID;
+    if (!crystalhd_profile_to_algo(profile, &algo, &subtype))
+        return BC_STS_NOT_IMPL;
+
+    BC_STATUS sts = DtsOpenDecoder(ctx.device, BC_STREAM_TYPE_ES);
+    if (sts != BC_STS_SUCCESS)
+        return sts;
+    ctx.decoder_open = true;
+
+    sts = DtsSetVideoParams(ctx.device, algo, FALSE, FALSE, TRUE, 0);
+    if (sts != BC_STS_SUCCESS)
+        goto fail;
+
+    BC_INPUT_FORMAT input{};
+    input.mSubtype = subtype;
+    input.width = ctx.width;
+    input.height = ctx.height;
+    input.startCodeSz = 4;
+    input.Progressive = 1;
+    sts = DtsSetInputFormat(ctx.device, &input);
+    if (sts != BC_STS_SUCCESS)
+        goto fail;
+
+    sts = DtsSetColorSpace(ctx.device, OUTPUT_MODE420);
+    if (sts != BC_STS_SUCCESS)
+        goto fail;
+
+    sts = DtsStartDecoder(ctx.device);
+    if (sts != BC_STS_SUCCESS)
+        goto fail;
+    ctx.decoder_started = true;
+
+    sts = DtsStartCapture(ctx.device);
+    if (sts != BC_STS_SUCCESS)
+        goto fail;
+    ctx.capture_started = true;
+    ctx.video_algo = algo;
+    ctx.media_subtype = subtype;
+    return BC_STS_SUCCESS;
+
+fail:
+    crystalhd_context_stop_decoder(ctx);
+    return sts;
 }
 
 static uint32_t crystalhd_align_up(uint32_t value, uint32_t align)
@@ -366,6 +458,12 @@ static VAStatus crystalhd_CreateContext(VADriverContextP ctx, VAConfigID config_
     ctx_info.width = static_cast<uint32_t>(picture_width);
     ctx_info.height = static_cast<uint32_t>(picture_height);
     ctx_info.device = device;
+
+    BC_STATUS decode_status = crystalhd_context_start_decoder(ctx_info, cfg->profile);
+    if (decode_status != BC_STS_SUCCESS) {
+        DtsDeviceClose(device);
+        return crystalhd_status_to_va(decode_status);
+    }
     drv->contexts.push_back(ctx_info);
 
     if (context_id)
@@ -527,6 +625,7 @@ static VAStatus crystalhd_DestroyContext(VADriverContextP ctx, VAContextID conte
 
     for (auto it = drv->contexts.begin(); it != drv->contexts.end(); ++it) {
         if (it->id == context_id) {
+            crystalhd_context_stop_decoder(*it);
             if (it->device)
                 DtsDeviceClose(it->device);
             drv->contexts.erase(it);
