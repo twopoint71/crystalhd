@@ -1495,9 +1495,9 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ctx->max_profiles = 3;
     ctx->max_entrypoints = 1;
     ctx->max_attributes = 1;
-    ctx->max_subpic_formats = 0;
+    ctx->max_subpic_formats = 1;
     ctx->max_display_attributes = 0;
-    ctx->max_image_formats = 0;
+    ctx->max_image_formats = 1;
 
     ctx->vtable->vaTerminate = crystalhd_terminate;
     ctx->vtable->vaQueryConfigProfiles = crystalhd_QueryConfigProfiles;
@@ -1544,6 +1544,7 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ASSIGN_VTABLE_STUB(ctx->vtable, vaLockSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaUnlockSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaGetSurfaceAttributes);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaDeriveImage);
     ctx->vtable->vaCreateSurfaces2 = crystalhd_CreateSurfaces2;
     ctx->vtable->vaExportSurfaceHandle = crystalhd_ExportSurfaceHandle;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateMFContext);
