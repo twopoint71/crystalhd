@@ -128,6 +128,13 @@ struct crystalhd_surface {
     std::vector<uint8_t> buffer;
 };
 
+struct crystalhd_image_record {
+    VAImage image;
+    std::vector<uint8_t> storage;
+    bool derived = false;
+    VASurfaceID surface = VA_INVALID_SURFACE;
+};
+
 static bool crystalhd_surface_get_planes(crystalhd_surface &surface,
                                          uint8_t **y_ptr,
                                          size_t *y_size,
@@ -158,10 +165,12 @@ struct crystalhd_driver_state {
     std::vector<crystalhd_config> configs;
     std::vector<crystalhd_context> contexts;
     std::vector<crystalhd_surface> surfaces;
+    std::vector<crystalhd_image_record> images;
     VAConfigID next_config_id = 1;
     VAContextID next_context_id = 1;
     VASurfaceID next_surface_id = 1;
     VABufferID next_buffer_id = 1;
+    VAImageID next_image_id = 1;
     HANDLE surface_device = nullptr;
 };
 
@@ -341,6 +350,53 @@ static crystalhd_surface *crystalhd_find_surface(crystalhd_driver_state *drv,
             return &surface;
     }
     return nullptr;
+}
+
+static crystalhd_image_record *crystalhd_find_image(crystalhd_driver_state *drv,
+                                                    VAImageID id)
+{
+    if (!drv)
+        return nullptr;
+    for (auto &image : drv->images) {
+        if (image.image.image_id == id)
+            return &image;
+    }
+    return nullptr;
+}
+
+static crystalhd_image_record *crystalhd_find_image_by_buffer(crystalhd_driver_state *drv,
+                                                              VABufferID id)
+{
+    if (!drv)
+        return nullptr;
+    for (auto &image : drv->images) {
+        if (image.image.buf == id)
+            return &image;
+    }
+    return nullptr;
+}
+
+static uint8_t *crystalhd_surface_data(crystalhd_surface &surface)
+{
+    if (surface.dmabuf_backed)
+        return static_cast<uint8_t *>(surface.dmabuf_map);
+    if (!surface.buffer.empty())
+        return surface.buffer.data();
+    return nullptr;
+}
+
+static uint8_t *crystalhd_image_data_ptr(crystalhd_driver_state *drv,
+                                         crystalhd_image_record &image)
+{
+    if (image.derived) {
+        crystalhd_surface *surface = crystalhd_find_surface(drv, image.surface);
+        if (!surface)
+            return nullptr;
+        return crystalhd_surface_data(*surface);
+    }
+    if (image.storage.empty())
+        return nullptr;
+    return image.storage.data();
 }
 
 static bool crystalhd_profile_to_algo(VAProfile profile, uint32_t *algo,
@@ -550,6 +606,12 @@ static VAStatus crystalhd_DestroyBuffer(VADriverContextP ctx, VABufferID buffer_
         }
     }
 
+    auto *image = crystalhd_find_image_by_buffer(drv, buffer_id);
+    if (image) {
+        image->image.buf = VA_INVALID_ID;
+        return VA_STATUS_SUCCESS;
+    }
+
     return VA_STATUS_ERROR_INVALID_BUFFER;
 }
 
@@ -597,6 +659,13 @@ static VAStatus crystalhd_MapBuffer(VADriverContextP ctx, VABufferID buffer_id, 
         return VA_STATUS_SUCCESS;
     }
 
+    if (auto *image = crystalhd_find_image_by_buffer(drv, buffer_id)) {
+        *pbuf = crystalhd_image_data_ptr(drv, *image);
+        if (!*pbuf)
+            return VA_STATUS_ERROR_OPERATION_FAILED;
+        return VA_STATUS_SUCCESS;
+    }
+
     return VA_STATUS_ERROR_INVALID_BUFFER;
 }
 
@@ -615,6 +684,9 @@ static VAStatus crystalhd_UnmapBuffer(VADriverContextP ctx, VABufferID buffer_id
         buffer->map_ptr = nullptr;
         return VA_STATUS_SUCCESS;
     }
+
+    if (crystalhd_find_image_by_buffer(drv, buffer_id))
+        return VA_STATUS_SUCCESS;
 
     return VA_STATUS_ERROR_INVALID_BUFFER;
 }
@@ -912,6 +984,16 @@ static bool crystalhd_surface_format_supported(uint32_t rt_format, uint32_t four
     return rt_format == VA_RT_FORMAT_YUV420 && fourcc == VA_FOURCC_NV12;
 }
 
+static void crystalhd_fill_nv12_format(VAImageFormat *format)
+{
+    if (!format)
+        return;
+    memset(format, 0, sizeof(*format));
+    format->fourcc = VA_FOURCC_NV12;
+    format->byte_order = VA_LSB_FIRST;
+    format->bits_per_pixel = 12;
+}
+
 
 static VAStatus crystalhd_surface_allocation(uint32_t width, uint32_t height,
                                              uint32_t rt_format, uint32_t fourcc,
@@ -932,6 +1014,222 @@ static VAStatus crystalhd_surface_allocation(uint32_t width, uint32_t height,
 
     *pitch = stride;
     *alloc_size = static_cast<size_t>(total);
+    return VA_STATUS_SUCCESS;
+}
+
+static size_t crystalhd_image_size(uint32_t pitch, uint32_t height)
+{
+    uint64_t y = static_cast<uint64_t>(pitch) * height;
+    uint64_t uv = static_cast<uint64_t>(pitch) * ((height + 1) / 2);
+    return static_cast<size_t>(y + uv);
+}
+
+static bool crystalhd_copy_plane(uint8_t *dst, uint32_t dst_pitch,
+                                 const uint8_t *src, uint32_t src_pitch,
+                                 uint32_t width, uint32_t height)
+{
+    if (!dst || !src)
+        return false;
+    for (uint32_t row = 0; row < height; ++row) {
+        memcpy(dst + row * dst_pitch, src + row * src_pitch, width);
+    }
+    return true;
+}
+
+static bool crystalhd_copy_surface_to_image(crystalhd_surface &surface,
+                                            uint8_t *dst, uint32_t dst_pitch)
+{
+    uint8_t *src = crystalhd_surface_data(surface);
+    if (!src || !dst)
+        return false;
+    if (!crystalhd_copy_plane(dst, dst_pitch, src, surface.pitch,
+                              surface.width, surface.height))
+        return false;
+    uint8_t *src_uv = src + surface.uv_offset;
+    uint8_t *dst_uv = dst + static_cast<size_t>(dst_pitch) * surface.height;
+    return crystalhd_copy_plane(dst_uv, dst_pitch, src_uv,
+                                surface.uv_stride ? surface.uv_stride : surface.pitch,
+                                surface.width, (surface.height + 1) / 2);
+}
+
+static bool crystalhd_copy_image_to_surface(const uint8_t *src, uint32_t src_pitch,
+                                            crystalhd_surface &surface)
+{
+    uint8_t *dst = crystalhd_surface_data(surface);
+    if (!dst || !src)
+        return false;
+    if (!crystalhd_copy_plane(dst, surface.pitch, src, src_pitch,
+                              surface.width, surface.height))
+        return false;
+    const uint8_t *src_uv = src + static_cast<size_t>(src_pitch) * surface.height;
+    uint8_t *dst_uv = dst + surface.uv_offset;
+    return crystalhd_copy_plane(dst_uv,
+                                surface.uv_stride ? surface.uv_stride : surface.pitch,
+                                src_uv, src_pitch, surface.width,
+                                (surface.height + 1) / 2);
+}
+
+static VAStatus crystalhd_QueryImageFormats(VADriverContextP, VAImageFormat *format_list,
+                                            int *num_formats)
+{
+    if (num_formats)
+        *num_formats = 1;
+    if (format_list)
+        crystalhd_fill_nv12_format(&format_list[0]);
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_CreateImage(VADriverContextP ctx, VAImageFormat *format,
+                                      int width, int height, VAImage *out_image)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv || !format || !out_image)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (width <= 0 || height <= 0)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (format->fourcc != VA_FOURCC_NV12)
+        return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+
+    crystalhd_image_record image{};
+    image.image.image_id = drv->next_image_id++;
+    image.image.buf = drv->next_buffer_id++;
+    crystalhd_fill_nv12_format(&image.image.format);
+    image.image.width = static_cast<uint32_t>(width);
+    image.image.height = static_cast<uint32_t>(height);
+    image.image.num_planes = 2;
+    image.image.pitches[0] = crystalhd_align_up(static_cast<uint32_t>(width), 2);
+    image.image.pitches[1] = image.image.pitches[0];
+    image.image.offsets[0] = 0;
+    image.image.offsets[1] = image.image.pitches[0] * image.image.height;
+    image.image.data_size = crystalhd_image_size(image.image.pitches[0], image.image.height);
+
+    try {
+        image.storage.resize(image.image.data_size);
+    } catch (const std::bad_alloc &) {
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
+
+    drv->images.push_back(std::move(image));
+    *out_image = drv->images.back().image;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_DestroyImage(VADriverContextP ctx, VAImageID image_id)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    auto it = std::remove_if(drv->images.begin(), drv->images.end(),
+                             [image_id](const crystalhd_image_record &image) {
+                                 return image.image.image_id == image_id;
+                             });
+    if (it == drv->images.end())
+        return VA_STATUS_ERROR_INVALID_IMAGE;
+    drv->images.erase(it, drv->images.end());
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_DeriveImage(VADriverContextP ctx, VASurfaceID surface_id,
+                                      VAImage *out_image)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv || !out_image)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    crystalhd_surface *surface = crystalhd_find_surface(drv, surface_id);
+    if (!surface)
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+    if (!crystalhd_surface_data(*surface))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
+    crystalhd_image_record image{};
+    image.derived = true;
+    image.surface = surface_id;
+    image.image.image_id = drv->next_image_id++;
+    image.image.buf = drv->next_buffer_id++;
+    crystalhd_fill_nv12_format(&image.image.format);
+    image.image.width = surface->width;
+    image.image.height = surface->height;
+    image.image.num_planes = 2;
+    image.image.pitches[0] = surface->pitch;
+    image.image.pitches[1] = surface->uv_stride ? surface->uv_stride : surface->pitch;
+    image.image.offsets[0] = 0;
+    image.image.offsets[1] = surface->uv_offset;
+    image.image.data_size = crystalhd_image_size(surface->pitch, surface->height);
+
+    drv->images.push_back(std::move(image));
+    *out_image = drv->images.back().image;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_GetImage(VADriverContextP ctx, VASurfaceID surface_id,
+                                   int x, int y, unsigned int width,
+                                   unsigned int height, VAImageID image_id)
+{
+    if (x || y)
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    crystalhd_surface *surface = crystalhd_find_surface(drv, surface_id);
+    if (!surface)
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+
+    crystalhd_image_record *image = crystalhd_find_image(drv, image_id);
+    if (!image)
+        return VA_STATUS_ERROR_INVALID_IMAGE;
+    if (image->derived)
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+    if (width != surface->width || height != surface->height)
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+    uint8_t *dst = crystalhd_image_data_ptr(drv, *image);
+    if (!dst)
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
+    if (!crystalhd_copy_surface_to_image(*surface, dst, image->image.pitches[0]))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_PutImage(VADriverContextP ctx, VASurfaceID surface_id,
+                                   VAImageID image_id, int src_x, int src_y,
+                                   unsigned int src_width, unsigned int src_height,
+                                   int dest_x, int dest_y,
+                                   unsigned int dest_width, unsigned int dest_height)
+{
+    if (src_x || src_y || dest_x || dest_y)
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    crystalhd_surface *surface = crystalhd_find_surface(drv, surface_id);
+    if (!surface)
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+    if (src_width != surface->width || src_height != surface->height ||
+        dest_width != surface->width || dest_height != surface->height)
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+    crystalhd_image_record *image = crystalhd_find_image(drv, image_id);
+    if (!image)
+        return VA_STATUS_ERROR_INVALID_IMAGE;
+    if (image->derived)
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+    uint8_t *src = crystalhd_image_data_ptr(drv, *image);
+    if (!src)
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
+    if (!crystalhd_copy_image_to_surface(src, image->image.pitches[0], *surface))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
     return VA_STATUS_SUCCESS;
 }
 
@@ -1055,6 +1353,7 @@ static VAStatus crystalhd_terminate(VADriverContextP ctx)
         DtsDeviceClose(drv->surface_device);
     drv->contexts.clear();
     drv->configs.clear();
+    drv->images.clear();
     drv->surfaces.clear();
     delete drv;
     ctx->pDriverData = nullptr;
@@ -1523,12 +1822,12 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ctx->vtable->vaQuerySurfaceStatus = crystalhd_QuerySurfaceStatus;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaQuerySurfaceError);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaPutSurface);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaQueryImageFormats);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateImage);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaDestroyImage);
+    ctx->vtable->vaQueryImageFormats = crystalhd_QueryImageFormats;
+    ctx->vtable->vaCreateImage = crystalhd_CreateImage;
+    ctx->vtable->vaDestroyImage = crystalhd_DestroyImage;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaSetImagePalette);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaGetImage);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaPutImage);
+    ctx->vtable->vaGetImage = crystalhd_GetImage;
+    ctx->vtable->vaPutImage = crystalhd_PutImage;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaQuerySubpictureFormats);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateSubpicture);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaDestroySubpicture);
@@ -1544,7 +1843,7 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ASSIGN_VTABLE_STUB(ctx->vtable, vaLockSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaUnlockSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaGetSurfaceAttributes);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaDeriveImage);
+    ctx->vtable->vaDeriveImage = crystalhd_DeriveImage;
     ctx->vtable->vaCreateSurfaces2 = crystalhd_CreateSurfaces2;
     ctx->vtable->vaExportSurfaceHandle = crystalhd_ExportSurfaceHandle;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateMFContext);
