@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <new>
+#include <deque>
 #include <vector>
 #include <limits>
 #include <unordered_map>
@@ -52,19 +53,17 @@ struct crystalhd_context {
     struct crystalhd_pending_picture {
         bool in_progress = false;
         VASurfaceID target = VA_INVALID_SURFACE;
-        std::vector<uint8_t> pic_params;
-        std::vector<uint8_t> slice_params;
-        std::vector<uint8_t> slice_data;
-        std::vector<uint8_t> sei_payload;
+        VABufferID last_pic_param = VA_INVALID_ID;
+        std::deque<VABufferID> pending_slice_params;
+        std::deque<VABufferID> pending_slice_data;
 
         void reset()
         {
             in_progress = false;
             target = VA_INVALID_SURFACE;
-            pic_params.clear();
-            slice_params.clear();
-            slice_data.clear();
-            sei_payload.clear();
+            last_pic_param = VA_INVALID_ID;
+            pending_slice_params.clear();
+            pending_slice_data.clear();
         }
     };
 
@@ -300,6 +299,81 @@ fail:
     return sts;
 }
 
+static VAStatus crystalhd_submit_bitstream(crystalhd_context &ctx,
+                                           const uint8_t *data,
+                                           size_t size)
+{
+    if (!data || !size)
+        return VA_STATUS_SUCCESS;
+
+    while (size) {
+        uint32_t chunk = static_cast<uint32_t>(std::min<size_t>(size, std::numeric_limits<uint32_t>::max()));
+        BC_STATUS sts = DtsProcInput(ctx.device, const_cast<uint8_t *>(data), chunk, 0, 0);
+        if (sts != BC_STS_SUCCESS)
+            return crystalhd_status_to_va(sts);
+        data += chunk;
+        size -= chunk;
+    }
+
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_process_slice_pair(crystalhd_context &ctx,
+                                             VABufferID param_id,
+                                             VABufferID data_id)
+{
+    auto *param_buffer = crystalhd_find_buffer(ctx, param_id);
+    auto *data_buffer = crystalhd_find_buffer(ctx, data_id);
+    if (!param_buffer || !data_buffer)
+        return VA_STATUS_ERROR_INVALID_BUFFER;
+    if (!param_buffer->element_size ||
+        param_buffer->element_size < sizeof(VASliceParameterBufferBase))
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    const uint8_t *param_base = param_buffer->storage.data();
+    const uint8_t *slice_data_base = data_buffer->storage.data();
+    const size_t slice_data_size = data_buffer->storage.size();
+
+    for (size_t i = 0; i < param_buffer->num_elements; ++i) {
+        size_t offset = i * param_buffer->element_size;
+        if (offset + sizeof(VASliceParameterBufferBase) > param_buffer->storage.size())
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+        const auto *slice = reinterpret_cast<const VASliceParameterBufferBase *>(param_base + offset);
+
+        if (slice->slice_data_offset > slice_data_size)
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+        if (slice->slice_data_size > slice_data_size - slice->slice_data_offset)
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+        if (slice->slice_data_flag != VA_SLICE_DATA_FLAG_ALL)
+            return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+        const uint8_t *slice_ptr = slice_data_base + slice->slice_data_offset;
+        VAStatus status = crystalhd_submit_bitstream(ctx, slice_ptr, slice->slice_data_size);
+        if (status != VA_STATUS_SUCCESS)
+            return status;
+    }
+
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_process_pending_slices(crystalhd_context &ctx)
+{
+    while (!ctx.pending_picture.pending_slice_params.empty() &&
+           !ctx.pending_picture.pending_slice_data.empty()) {
+        VABufferID param_id = ctx.pending_picture.pending_slice_params.front();
+        VABufferID data_id = ctx.pending_picture.pending_slice_data.front();
+        ctx.pending_picture.pending_slice_params.pop_front();
+        ctx.pending_picture.pending_slice_data.pop_front();
+
+        VAStatus status = crystalhd_process_slice_pair(ctx, param_id, data_id);
+        if (status != VA_STATUS_SUCCESS)
+            return status;
+    }
+
+    return VA_STATUS_SUCCESS;
+}
+
 static VAStatus crystalhd_CreateBuffer(VADriverContextP ctx, VAContextID context,
                                        VABufferType type, unsigned int size,
                                        unsigned int num_elements, void *data,
@@ -444,6 +518,7 @@ static VAStatus crystalhd_RenderPicture(VADriverContextP ctx, VAContextID contex
     if (!va_ctx || !va_ctx->pending_picture.in_progress)
         return VA_STATUS_ERROR_INVALID_CONTEXT;
 
+    VAStatus status = VA_STATUS_SUCCESS;
     for (int i = 0; i < num_buffers; ++i) {
         VABufferID id = buffers[i];
         auto *buffer = crystalhd_find_buffer(*va_ctx, id);
@@ -452,18 +527,19 @@ static VAStatus crystalhd_RenderPicture(VADriverContextP ctx, VAContextID contex
 
         switch (buffer->type) {
         case VAPictureParameterBufferType:
-            va_ctx->pending_picture.pic_params.assign(buffer->storage.begin(),
-                                                      buffer->storage.end());
+            va_ctx->pending_picture.last_pic_param = id;
             break;
         case VASliceParameterBufferType:
-            va_ctx->pending_picture.slice_params.insert(
-                va_ctx->pending_picture.slice_params.end(),
-                buffer->storage.begin(), buffer->storage.end());
+            va_ctx->pending_picture.pending_slice_params.push_back(id);
+            status = crystalhd_process_pending_slices(*va_ctx);
+            if (status != VA_STATUS_SUCCESS)
+                return status;
             break;
         case VASliceDataBufferType:
-            va_ctx->pending_picture.slice_data.insert(
-                va_ctx->pending_picture.slice_data.end(),
-                buffer->storage.begin(), buffer->storage.end());
+            va_ctx->pending_picture.pending_slice_data.push_back(id);
+            status = crystalhd_process_pending_slices(*va_ctx);
+            if (status != VA_STATUS_SUCCESS)
+                return status;
             break;
         default:
             return VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE;
@@ -483,16 +559,9 @@ static VAStatus crystalhd_EndPicture(VADriverContextP ctx, VAContextID context)
     if (!va_ctx || !va_ctx->pending_picture.in_progress)
         return VA_STATUS_ERROR_INVALID_CONTEXT;
 
-    if (!va_ctx->pending_picture.slice_data.empty()) {
-        if (va_ctx->pending_picture.slice_data.size() > std::numeric_limits<uint32_t>::max())
-            return VA_STATUS_ERROR_OPERATION_FAILED;
-        uint32_t payload_size = static_cast<uint32_t>(va_ctx->pending_picture.slice_data.size());
-        BC_STATUS sts = DtsProcInput(va_ctx->device,
-                                     va_ctx->pending_picture.slice_data.data(),
-                                     payload_size, 0, 0);
-        if (sts != BC_STS_SUCCESS)
-            return crystalhd_status_to_va(sts);
-    }
+    if (!va_ctx->pending_picture.pending_slice_params.empty() ||
+        !va_ctx->pending_picture.pending_slice_data.empty())
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     if (va_ctx->pending_picture.target != VA_INVALID_SURFACE)
         va_ctx->surface_states[va_ctx->pending_picture.target].current_state =
