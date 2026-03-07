@@ -27,6 +27,10 @@
 #include "libcrystalhd_priv.h"
 
 static constexpr bool kCrystalhdEnableDmabufSurfaces = true;
+static constexpr uint32_t kCrystalhdPrimeMemTypes =
+    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME |
+    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 |
+    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3;
 
 struct crystalhd_config {
     VAConfigID id;
@@ -1260,7 +1264,8 @@ static VAStatus crystalhd_AcquireBufferHandle(VADriverContextP ctx, VABufferID b
     }
 
     uint32_t requested = buf_info->mem_type;
-    bool want_prime = requested & VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    uint32_t prime_mask = requested & kCrystalhdPrimeMemTypes;
+    bool want_prime = prime_mask;
     bool want_user = requested & VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR;
     if (!requested) {
         want_prime = image->derived && image->surface != VA_INVALID_SURFACE;
@@ -1275,7 +1280,9 @@ static VAStatus crystalhd_AcquireBufferHandle(VADriverContextP ctx, VABufferID b
             if (fd < 0)
                 return VA_STATUS_ERROR_OPERATION_FAILED;
             memset(buf_info, 0, sizeof(*buf_info));
-            buf_info->mem_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+            uint32_t selected_mem = prime_mask ? (prime_mask & (~prime_mask + 1))
+                                               : VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+            buf_info->mem_type = selected_mem;
             buf_info->type = VAImageBufferType;
             buf_info->handle = static_cast<uintptr_t>(fd);
             buf_info->mem_size = surface->dmabuf_map_len;
