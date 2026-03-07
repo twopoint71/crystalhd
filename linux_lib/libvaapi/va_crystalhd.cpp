@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <new>
 #include <vector>
+#include <limits>
 
+#include <va/va.h>
 #include <va/va_backend.h>
 #include <va/va_backend_vpp.h>
 
@@ -49,8 +51,8 @@ struct crystalhd_context {
     struct crystalhd_pending_picture {
         bool in_progress = false;
         VASurfaceID target = VA_INVALID_SURFACE;
-        VAPictureParameterBufferH264 pic_params{};
-        std::vector<VASliceParameterBufferH264> slice_params;
+        std::vector<uint8_t> pic_params;
+        std::vector<uint8_t> slice_params;
         std::vector<uint8_t> slice_data;
         std::vector<uint8_t> sei_payload;
 
@@ -58,6 +60,7 @@ struct crystalhd_context {
         {
             in_progress = false;
             target = VA_INVALID_SURFACE;
+            pic_params.clear();
             slice_params.clear();
             slice_data.clear();
             sei_payload.clear();
@@ -65,7 +68,6 @@ struct crystalhd_context {
     };
 
     std::vector<crystalhd_va_buffer> buffers;
-    VABufferID next_buffer_id = 1;
     crystalhd_pending_picture pending_picture;
 };
 
@@ -78,6 +80,15 @@ crystalhd_find_buffer(crystalhd_context &ctx,
             return &buffer;
     }
     return nullptr;
+}
+
+static crystalhd_context::crystalhd_va_buffer *crystalhd_alloc_buffer(crystalhd_driver_state *drv,
+                                                                      crystalhd_context &ctx)
+{
+    crystalhd_context::crystalhd_va_buffer buffer;
+    buffer.id = drv->next_buffer_id++;
+    ctx.buffers.push_back(std::move(buffer));
+    return &ctx.buffers.back();
 }
 
 struct crystalhd_surface {
@@ -102,6 +113,7 @@ struct crystalhd_driver_state {
     VAConfigID next_config_id = 1;
     VAContextID next_context_id = 1;
     VASurfaceID next_surface_id = 1;
+    VABufferID next_buffer_id = 1;
     HANDLE surface_device = nullptr;
 };
 
@@ -159,6 +171,18 @@ static crystalhd_config *crystalhd_find_config(crystalhd_driver_state *drv, VACo
     for (auto &cfg : drv->configs) {
         if (cfg.id == id)
             return &cfg;
+    }
+    return nullptr;
+}
+
+static crystalhd_context *crystalhd_find_context(crystalhd_driver_state *drv,
+                                                 VAContextID id)
+{
+    if (!drv)
+        return nullptr;
+    for (auto &context : drv->contexts) {
+        if (context.id == id)
+            return &context;
     }
     return nullptr;
 }
@@ -260,6 +284,204 @@ static BC_STATUS crystalhd_context_start_decoder(crystalhd_context &ctx,
 fail:
     crystalhd_context_stop_decoder(ctx);
     return sts;
+}
+
+static VAStatus crystalhd_CreateBuffer(VADriverContextP ctx, VAContextID context,
+                                       VABufferType type, unsigned int size,
+                                       unsigned int num_elements, void *data,
+                                       VABufferID *buf_id)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv || !buf_id || !size || !num_elements)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    crystalhd_context *va_ctx = crystalhd_find_context(drv, context);
+    if (!va_ctx)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    size_t total_sz = static_cast<size_t>(size) * static_cast<size_t>(num_elements);
+    auto *buffer = crystalhd_alloc_buffer(drv, *va_ctx);
+    buffer->type = type;
+    buffer->num_elements = num_elements;
+    buffer->element_size = size;
+    buffer->mapped = false;
+    buffer->map_ptr = nullptr;
+    buffer->storage.resize(total_sz);
+    if (data && total_sz)
+        memcpy(buffer->storage.data(), data, total_sz);
+
+    *buf_id = buffer->id;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_DestroyBuffer(VADriverContextP ctx, VABufferID buffer_id)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    for (auto &context : drv->contexts) {
+        auto it = std::remove_if(context.buffers.begin(), context.buffers.end(),
+                                 [&](const crystalhd_context::crystalhd_va_buffer &buf) {
+                                     return buf.id == buffer_id;
+                                 });
+        if (it != context.buffers.end()) {
+            context.buffers.erase(it, context.buffers.end());
+            return VA_STATUS_SUCCESS;
+        }
+    }
+
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+}
+
+static VAStatus crystalhd_BufferSetNumElements(VADriverContextP ctx, VABufferID buffer_id,
+                                               unsigned int num_elements)
+{
+    if (!num_elements)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    for (auto &context : drv->contexts) {
+        auto *buffer = crystalhd_find_buffer(context, buffer_id);
+        if (!buffer)
+            continue;
+
+        buffer->num_elements = num_elements;
+        size_t total_sz = static_cast<size_t>(buffer->element_size) * num_elements;
+        buffer->storage.resize(total_sz);
+        return VA_STATUS_SUCCESS;
+    }
+
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+}
+
+static VAStatus crystalhd_MapBuffer(VADriverContextP ctx, VABufferID buffer_id, void **pbuf)
+{
+    if (!pbuf)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    for (auto &context : drv->contexts) {
+        auto *buffer = crystalhd_find_buffer(context, buffer_id);
+        if (!buffer)
+            continue;
+
+        buffer->mapped = true;
+        buffer->map_ptr = buffer->storage.data();
+        *pbuf = buffer->map_ptr;
+        return VA_STATUS_SUCCESS;
+    }
+
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+}
+
+static VAStatus crystalhd_UnmapBuffer(VADriverContextP ctx, VABufferID buffer_id)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    for (auto &context : drv->contexts) {
+        auto *buffer = crystalhd_find_buffer(context, buffer_id);
+        if (!buffer)
+            continue;
+
+        buffer->mapped = false;
+        buffer->map_ptr = nullptr;
+        return VA_STATUS_SUCCESS;
+    }
+
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+}
+
+static VAStatus crystalhd_BeginPicture(VADriverContextP ctx, VAContextID context,
+                                       VASurfaceID render_target)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    crystalhd_context *va_ctx = crystalhd_find_context(drv, context);
+    if (!va_ctx)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    va_ctx->pending_picture.reset();
+    va_ctx->pending_picture.in_progress = true;
+    va_ctx->pending_picture.target = render_target;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_RenderPicture(VADriverContextP ctx, VAContextID context,
+                                        VABufferID *buffers, int num_buffers)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+    if (!buffers || num_buffers <= 0)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    crystalhd_context *va_ctx = crystalhd_find_context(drv, context);
+    if (!va_ctx || !va_ctx->pending_picture.in_progress)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    for (int i = 0; i < num_buffers; ++i) {
+        VABufferID id = buffers[i];
+        auto *buffer = crystalhd_find_buffer(*va_ctx, id);
+        if (!buffer)
+            return VA_STATUS_ERROR_INVALID_BUFFER;
+
+        switch (buffer->type) {
+        case VAPictureParameterBufferType:
+            va_ctx->pending_picture.pic_params.assign(buffer->storage.begin(),
+                                                      buffer->storage.end());
+            break;
+        case VASliceParameterBufferType:
+            va_ctx->pending_picture.slice_params.insert(
+                va_ctx->pending_picture.slice_params.end(),
+                buffer->storage.begin(), buffer->storage.end());
+            break;
+        case VASliceDataBufferType:
+            va_ctx->pending_picture.slice_data.insert(
+                va_ctx->pending_picture.slice_data.end(),
+                buffer->storage.begin(), buffer->storage.end());
+            break;
+        default:
+            return VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE;
+        }
+    }
+
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_EndPicture(VADriverContextP ctx, VAContextID context)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    crystalhd_context *va_ctx = crystalhd_find_context(drv, context);
+    if (!va_ctx || !va_ctx->pending_picture.in_progress)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    if (!va_ctx->pending_picture.slice_data.empty()) {
+        if (va_ctx->pending_picture.slice_data.size() > std::numeric_limits<uint32_t>::max())
+            return VA_STATUS_ERROR_OPERATION_FAILED;
+        uint32_t payload_size = static_cast<uint32_t>(va_ctx->pending_picture.slice_data.size());
+        BC_STATUS sts = DtsProcInput(va_ctx->device,
+                                     va_ctx->pending_picture.slice_data.data(),
+                                     payload_size, 0, 0);
+        if (sts != BC_STS_SUCCESS)
+            return crystalhd_status_to_va(sts);
+    }
+
+    va_ctx->pending_picture.reset();
+    return VA_STATUS_SUCCESS;
 }
 
 static uint32_t crystalhd_align_up(uint32_t value, uint32_t align)
@@ -836,14 +1058,14 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ctx->vtable->vaDestroySurfaces = crystalhd_DestroySurfaces;
     ctx->vtable->vaCreateContext = crystalhd_CreateContext;
     ctx->vtable->vaDestroyContext = crystalhd_DestroyContext;
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateBuffer);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaBufferSetNumElements);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaMapBuffer);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaUnmapBuffer);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaDestroyBuffer);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaBeginPicture);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaRenderPicture);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaEndPicture);
+    ctx->vtable->vaCreateBuffer = crystalhd_CreateBuffer;
+    ctx->vtable->vaBufferSetNumElements = crystalhd_BufferSetNumElements;
+    ctx->vtable->vaMapBuffer = crystalhd_MapBuffer;
+    ctx->vtable->vaUnmapBuffer = crystalhd_UnmapBuffer;
+    ctx->vtable->vaDestroyBuffer = crystalhd_DestroyBuffer;
+    ctx->vtable->vaBeginPicture = crystalhd_BeginPicture;
+    ctx->vtable->vaRenderPicture = crystalhd_RenderPicture;
+    ctx->vtable->vaEndPicture = crystalhd_EndPicture;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaSyncSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaQuerySurfaceStatus);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaQuerySurfaceError);
