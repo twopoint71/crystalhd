@@ -134,6 +134,8 @@ struct crystalhd_image_record {
     bool derived = false;
     VASurfaceID surface = VA_INVALID_SURFACE;
     bool acquired = false;
+    bool acquired_is_fd = false;
+    int acquired_fd = -1;
 };
 
 static bool crystalhd_surface_get_planes(crystalhd_surface &surface,
@@ -1258,8 +1260,33 @@ static VAStatus crystalhd_AcquireBufferHandle(VADriverContextP ctx, VABufferID b
     }
 
     uint32_t requested = buf_info->mem_type;
-    if (requested && !(requested & VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR))
-        return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
+    bool want_prime = requested & VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    bool want_user = requested & VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR;
+    if (!requested) {
+        want_prime = image->derived && image->surface != VA_INVALID_SURFACE;
+        want_user = true;
+    }
+
+    if (want_prime) {
+        crystalhd_surface *surface = image->derived ?
+            crystalhd_find_surface(drv, image->surface) : nullptr;
+        if (surface && surface->dmabuf_backed && surface->dmabuf_fd >= 0) {
+            int fd = ::dup(surface->dmabuf_fd);
+            if (fd < 0)
+                return VA_STATUS_ERROR_OPERATION_FAILED;
+            memset(buf_info, 0, sizeof(*buf_info));
+            buf_info->mem_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+            buf_info->type = VAImageBufferType;
+            buf_info->handle = static_cast<uintptr_t>(fd);
+            buf_info->mem_size = surface->dmabuf_map_len;
+            image->acquired = true;
+            image->acquired_is_fd = true;
+            image->acquired_fd = fd;
+            return VA_STATUS_SUCCESS;
+        }
+        if (!want_user)
+            return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
+    }
 
     uint8_t *addr = crystalhd_image_data_ptr(drv, *image);
     if (!addr)
@@ -1271,6 +1298,8 @@ static VAStatus crystalhd_AcquireBufferHandle(VADriverContextP ctx, VABufferID b
     buf_info->handle = reinterpret_cast<uintptr_t>(addr);
     buf_info->mem_size = image->image.data_size;
     image->acquired = true;
+    image->acquired_is_fd = false;
+    image->acquired_fd = -1;
     return VA_STATUS_SUCCESS;
 }
 
@@ -1283,6 +1312,10 @@ static VAStatus crystalhd_ReleaseBufferHandle(VADriverContextP ctx, VABufferID b
     crystalhd_image_record *image = crystalhd_find_image_by_buffer(drv, buf_id);
     if (!image)
         return VA_STATUS_ERROR_INVALID_BUFFER;
+    if (image->acquired_is_fd && image->acquired_fd >= 0)
+        ::close(image->acquired_fd);
+    image->acquired_is_fd = false;
+    image->acquired_fd = -1;
     image->acquired = false;
     return VA_STATUS_SUCCESS;
 }
