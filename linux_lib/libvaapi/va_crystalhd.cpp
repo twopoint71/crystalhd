@@ -113,7 +113,8 @@ static crystalhd_config *crystalhd_find_config(crystalhd_driver_state *drv, VACo
     return nullptr;
 }
 
-static crystalhd_surface *crystalhd_find_surface(crystalhd_driver_state *drv, VASurfaceID id)
+static crystalhd_surface *crystalhd_find_surface(crystalhd_driver_state *drv,
+                                                VASurfaceID id)
 {
     if (!drv)
         return nullptr;
@@ -219,18 +220,22 @@ static VAStatus crystalhd_create_surface_from_dmabuf(crystalhd_driver_state *drv
     return VA_STATUS_SUCCESS;
 }
 
-static VAStatus crystalhd_destroy_surface(crystalhd_driver_state *drv, VASurfaceID id)
+static VAStatus crystalhd_destroy_surface(crystalhd_driver_state *drv,
+                                          VASurfaceID id)
 {
     if (!drv)
         return VA_STATUS_ERROR_INVALID_CONTEXT;
 
-    auto it = std::find_if(drv->surfaces.begin(), drv->surfaces.end(),
-                           [id](const crystalhd_surface &surf) { return surf.id == id; });
-    if (it == drv->surfaces.end())
+    crystalhd_surface *surface = crystalhd_find_surface(drv, id);
+    if (!surface)
         return VA_STATUS_ERROR_INVALID_SURFACE;
-    if (it->dmabuf_fd >= 0)
-        ::close(it->dmabuf_fd);
-    drv->surfaces.erase(it);
+    if (surface->dmabuf_fd >= 0)
+        ::close(surface->dmabuf_fd);
+    drv->surfaces.erase(std::remove_if(drv->surfaces.begin(), drv->surfaces.end(),
+                                       [id](const crystalhd_surface &surf) {
+                                           return surf.id == id;
+                                       }),
+                        drv->surfaces.end());
     return VA_STATUS_SUCCESS;
 }
 
@@ -487,7 +492,7 @@ static VAStatus crystalhd_CreateSurfaces(VADriverContextP ctx, int width, int he
 static VAStatus crystalhd_CreateSurfaces2(VADriverContextP ctx, unsigned int format,
                                           unsigned int width, unsigned int height,
                                           VASurfaceID *surfaces, unsigned int num_surfaces,
-                                          const VASurfaceAttrib *attrib_list,
+                                          VASurfaceAttrib *attrib_list,
                                           unsigned int num_attribs)
 {
     if (!width || !height || !num_surfaces)

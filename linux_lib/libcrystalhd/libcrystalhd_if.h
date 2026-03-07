@@ -33,6 +33,7 @@
 
 #include "bc_dts_defs.h"
 #include "bc_dts_types.h"
+#include "bc_dts_glob_lnx.h"
 
 #define FLEA_MAX_TRICK_MODE_SPEED	6
 
