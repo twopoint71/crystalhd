@@ -21,7 +21,7 @@ For other distributions install the equivalent `gcc`, `make`, `autoconf`,
 
 1. Clone and enter the repository:
    ```bash
-   git clone https://github.com/dbason/crystalhd.git
+   git clone https://github.com/twopoint71/crystalhd.gi
    cd crystalhd
    ```
 2. Generate the makefiles:
