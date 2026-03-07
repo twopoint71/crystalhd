@@ -38,6 +38,7 @@
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_priv.h"
+#include "libcrystalhd_strutil.h"
 #include "libcrystalhd_parser.h"
 
 /*============== Global shared area usage ======================*/
@@ -1758,7 +1759,6 @@ int dtscallback(struct dl_phdr_info *info, size_t size, void *data)
 //------------------------------------------------------------------------
 BC_STATUS DtsGetFirmwareFiles(DTS_LIB_CONTEXT *Ctx)
 {
-    int fwfile_len;
 	char fwfile[MAX_PATH + 1];
 	char fwfilepath[MAX_PATH + 1];
 #ifndef __APPLE__
@@ -1767,23 +1767,21 @@ BC_STATUS DtsGetFirmwareFiles(DTS_LIB_CONTEXT *Ctx)
 	const char fwdir[] = "/usr/lib/";
 #endif
 
-	if(Ctx->DevId == BC_PCI_DEVID_FLEA) {
-        fwfile_len = strlen(FWBINFILE_70015);
-        strncpy(fwfile, FWBINFILE_70015, fwfile_len);
-    } else {
-        fwfile_len = strlen(FWBINFILE_70012);
-        strncpy(fwfile, FWBINFILE_70012, fwfile_len);
-    }
-
-	if ((strlen(fwdir) + fwfile_len) > (MAX_PATH + 1)) {
-		DebugLog_Trace(LDIL_DATA,"DtsGetFirmwareFiles:Path is too large ....");
+	const char *fw_name = (Ctx->DevId == BC_PCI_DEVID_FLEA) ?
+					FWBINFILE_70015 : FWBINFILE_70012;
+	if (!dts_copy_string(fwfile, sizeof(fwfile), fw_name)) {
+		DebugLog_Trace(LDIL_DATA,
+			       "DtsGetFirmwareFiles: invalid firmware name\n");
 		return BC_STS_ERROR;
 	}
 
-	strncpy(fwfilepath, fwdir, strlen(fwdir) + 1);
-    strncat(fwfilepath, fwfile, fwfile_len);
-    fwfilepath[strlen(fwdir) + fwfile_len] = '\0';
-    strncpy(Ctx->FwBinFile, fwfilepath, strlen(fwdir) + fwfile_len);
+	if (!dts_copy_string(fwfilepath, sizeof(fwfilepath), fwdir) ||
+	    !dts_append_path(fwfilepath, sizeof(fwfilepath), fwfile) ||
+	    !dts_copy_string(Ctx->FwBinFile, sizeof(Ctx->FwBinFile), fwfilepath)) {
+		DebugLog_Trace(LDIL_DATA,
+			       "DtsGetFirmwareFiles: firmware path is too large\n");
+		return BC_STS_ERROR;
+	}
 
 	return BC_STS_SUCCESS;
 
@@ -2114,26 +2112,36 @@ BC_STATUS DtsPrepareMdata(DTS_LIB_CONTEXT *Ctx, uint64_t timeStamp, DTS_INPUT_MD
 //------------------------------------------------------------------------
 BC_STATUS DtsPrepareMdataASFHdr(DTS_LIB_CONTEXT *Ctx, DTS_INPUT_MDATA *mData, uint8_t* buf)
 {
+	if (buf == NULL)
+		return BC_STS_INSUFF_RES;
 
-
-		if(buf==NULL)
-			return BC_STS_INSUFF_RES;
-
-			buf[0]=0;
-			buf[1] = 0;
-			buf[2] = 01;
-			buf[3] = 0xE0;
-			buf[4] = 0x0;
-			buf[5]=35;
-			buf[6] =0x80;
-			buf[7]=0;
-			buf[8]= 0;
-			buf[9]=0x5a;buf[10]=0x5a;buf[11]=0x5a;buf[12]=0x5a;
-			buf[13]=0x0; buf[14]=0x0;buf[15]=0x0;buf[16]=0x20;
-			buf[17]=0x0; buf[18]=0x0;buf[19]=0x0;buf[20]=0x9;
-			buf[21]=0x5a; buf[22]=0x5a;buf[23]=0x5a;buf[24]=0x5a;
-			buf[25]=0xBD;
-			buf[26]=0x40;
+	buf[0] = 0;
+	buf[1] = 0;
+	buf[2] = 0x01;
+	buf[3] = 0xE0;
+	buf[4] = 0x0;
+	buf[5] = 35;
+	buf[6] = 0x80;
+	buf[7] = 0;
+	buf[8] = 0;
+	buf[9] = 0x5a;
+	buf[10] = 0x5a;
+	buf[11] = 0x5a;
+	buf[12] = 0x5a;
+	buf[13] = 0x0;
+	buf[14] = 0x0;
+	buf[15] = 0x0;
+	buf[16] = 0x20;
+	buf[17] = 0x0;
+	buf[18] = 0x0;
+	buf[19] = 0x0;
+	buf[20] = 0x9;
+	buf[21] = 0x5a;
+	buf[22] = 0x5a;
+	buf[23] = 0x5a;
+	buf[24] = 0x5a;
+	buf[25] = 0xBD;
+	buf[26] = 0x40;
 			buf[27]=mData->Spes.SeqNum[0];buf[28]=mData->Spes.SeqNum[1];
 			buf[29]=mData->Spes.Command;
 			buf[30]=buf[31]=buf[32]=buf[33]=buf[34]=buf[35]=buf[36]=buf[37]=buf[38]=buf[39]=buf[40]=0x0;
@@ -2500,7 +2508,7 @@ void * txThreadProc(void *ctx)
 	{
 		// First check the status of the HW
 		// Get the real HW free size and also mark as we want TX information only
-		pStat.cpbEmptySize = (0x3 << 31);
+		pStat.cpbEmptySize = 0x60000000u;
 
 		sts = DtsGetDriverStatus(hDevice, &pStat);
 		if(sts != BC_STS_SUCCESS)

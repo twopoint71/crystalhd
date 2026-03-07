@@ -30,6 +30,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include "7411d.h"
@@ -40,6 +41,7 @@
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_fwcmds.h"
 #include "libcrystalhd_fwload_if.h"
+#include "libcrystalhd_strutil.h"
 
 #if (!__STDC_WANT_SECURE_LIB__)
 inline bool memcpy_s(void *dest, size_t sizeInBytes, void *src, size_t count)
@@ -712,13 +714,18 @@ DtsGetFWVersionFromFile(
 		return sts;
 	}
 
-	if(fname){
-		strncat(fwfile,(const char*)fname,sizeof(fwfile));
-	}else{
-        if(Ctx->DevId == BC_PCI_DEVID_FLEA)
-            strncat(fwfile,FWBINFILE_70015,sizeof(FWBINFILE_70015));
-        else
-            strncat(fwfile,FWBINFILE_70012,sizeof(FWBINFILE_70012));
+	const char *suffix;
+	if (fname)
+		suffix = reinterpret_cast<const char *>(fname);
+	else if (Ctx->DevId == BC_PCI_DEVID_FLEA)
+		suffix = FWBINFILE_70015;
+	else
+		suffix = FWBINFILE_70012;
+
+	if (!dts_append_path(fwfile, sizeof(fwfile), suffix)) {
+		DebugLog_Trace(LDIL_DBG,
+			       "DtsGetFWVersionFromFile: firmware path truncated\n");
+		return BC_STS_INSUFF_RES;
 	}
 
 	if(!StreamVer){
@@ -2798,9 +2805,8 @@ DtsGetDILPath(
 	uint32_t *ptemp=NULL;
 	DTS_GET_CTX(hDevice,Ctx);
 
-	if(!DilPath || (size < sizeof(Ctx->DilPath)) ){
+	if (!DilPath || !size)
 		return BC_STS_INV_ARG;
-	}
 
 	/* if the first 4 bytes are zero, then the dil path in the context
 	is not yet set. Hence go ahead and look at registry and update the
@@ -2810,7 +2816,9 @@ DtsGetDILPath(
 	if(!(*ptemp))
 		DtsGetFirmwareFiles(Ctx);
 
-	strncpy(DilPath, Ctx->DilPath, sizeof(Ctx->DilPath));
+	int written = snprintf(DilPath, size, "%s", Ctx->DilPath);
+	if (written < 0 || static_cast<uint32_t>(written) >= size)
+		return BC_STS_INSUFF_RES;
 
 
 	return BC_STS_SUCCESS;

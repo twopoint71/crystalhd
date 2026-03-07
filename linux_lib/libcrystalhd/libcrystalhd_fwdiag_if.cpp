@@ -31,6 +31,7 @@
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_priv.h"
+#include "libcrystalhd_strutil.h"
 #include "libcrystalhd_fwdiag_if.h"
 #include "libcrystalhd_fwload_if.h"
 
@@ -167,12 +168,14 @@ DtsDownloadFWDIAGToLINK(HANDLE hDevice,char *FwBinFile)
 		return status;
 	}
 
-	if(FwBinFile!=NULL){
-		strncat(fwfile,(const char*)FwBinFile,sizeof(fwfile));
-		DebugLog_Trace(LDIL_DBG,"1. fwfile is %s\n",FwBinFile);
-	}else{
-		strncat(fwfile,"/",sizeof(fwfile));
-		strncat(fwfile,"bcmFWDiag.bin",sizeof(fwfile));
+	if (FwBinFile != NULL) {
+		if (!dts_append_path(fwfile, sizeof(fwfile), FwBinFile))
+			return BC_STS_INSUFF_RES;
+		DebugLog_Trace(LDIL_DBG,"1. fwfile is %s\n",fwfile);
+	} else {
+		if (!dts_append_path(fwfile, sizeof(fwfile), "/") ||
+		    !dts_append_path(fwfile, sizeof(fwfile), "bcmFWDiag.bin"))
+			return BC_STS_INSUFF_RES;
 		DebugLog_Trace(LDIL_DBG,"2. fwfile is %s\n",fwfile);
 	}
 
@@ -274,7 +277,6 @@ DtsDownloadFWDIAGToLINK(HANDLE hDevice,char *FwBinFile)
 
 	return BC_STS_SUCCESS;
 }
-
 
 
 

@@ -58,15 +58,29 @@ Follow the steps in [README.dkms](README.dkms) to `dkms add`, `build`, and
 
 ## Archived components
 
-The legacy user-space library, GStreamer filters, and sample applications are no
-longer maintained but have been preserved under the `archive/` directory:
+Legacy GStreamer filters and sample applications are no longer maintained but
+have been preserved under the `archive/` directory:
 
-- `archive/linux_lib`
 - `archive/filters`
 - `archive/examples`
 
 These projects are optional and not required for building or packaging the
 kernel module.
+
+## User-space library
+
+Applications consume CrystalHD through the user-space support library located in
+`linux_lib/libcrystalhd`. Build and install it with:
+
+```bash
+cd linux_lib/libcrystalhd
+make
+sudo make install
+```
+
+The updated build system installs `libcrystalhd.so` plus headers under
+`/usr/include/libcrystalhd`, and it now uses safer string handling that works on
+modern glibc toolchains.
 
 ## Firmware
 
