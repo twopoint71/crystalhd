@@ -752,3 +752,8 @@ VAStatus __vaDriverInit_1_22(VADriverContextP ctx)
 {
     return crystalhd_driver_init(ctx);
 }
+
+VAStatus __vaDriverInit_1_0(VADriverContextP ctx)
+{
+    return crystalhd_driver_init(ctx);
+}
