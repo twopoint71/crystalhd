@@ -82,6 +82,21 @@ The updated build system installs `libcrystalhd.so` plus headers under
 `/usr/include/libcrystalhd`, and it now uses safer string handling that works on
 modern glibc toolchains.
 
+### VA-API shim (experimental)
+
+An experimental VA-API driver skeleton lives in `linux_lib/libvaapi`. It does
+not yet decode video, but it establishes the entry points needed to experiment
+with wiring CrystalHD into the VA ecosystem:
+
+```bash
+cd linux_lib/libvaapi
+make
+sudo make install   # installs into /usr/lib/dri by default
+```
+
+The shared object is named `libva-crystalhd.so` and can be dropped alongside
+other VA drivers for testing.
+
 ## Firmware
 
 The firmware binaries shipped under `firmware/` should be installed automatically
