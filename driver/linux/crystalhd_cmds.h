@@ -83,8 +83,10 @@ struct crystalhd_cmd_tbl {
 BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 BC_STATUS crystalhd_resume(struct crystalhd_cmd *ctx);
 crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cmd,
-				      struct crystalhd_user *uc);
+			      struct crystalhd_user *uc);
 BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx, struct crystalhd_user **user_ctx);
+int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
+BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx, struct crystalhd_adp *adp);
 BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx);
 bool crystalhd_cmd_interrupt(struct crystalhd_cmd *ctx);

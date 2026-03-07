@@ -15,6 +15,7 @@ FIRMWARE += ../../firmware/fwbin/70012/bcm70012fw.bin
 OBJ :=	crystalhd_lnx.o \
 	crystalhd_misc.o \
 	crystalhd_cmds.o \
+	crystalhd_dmabuf.o \
 	crystalhd_hw.o \
 	crystalhd_linkfuncs.o \
 	crystalhd_fleafuncs.o \

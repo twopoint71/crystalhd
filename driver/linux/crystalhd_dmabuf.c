@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/fcntl.h>
+#include <linux/iosys-map.h>
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_cmds.h"
@@ -113,16 +114,20 @@ static int chd_dmabuf_mmap(struct dma_buf *dbuf, struct vm_area_struct *vma)
 			       slot->attrs);
 }
 
-static void *chd_dmabuf_vmap(struct dma_buf *dbuf)
+static int chd_dmabuf_vmap(struct dma_buf *dbuf, struct iosys_map *map)
 {
 	struct crystalhd_dmabuf_slot *slot = dbuf->priv;
 
-	return slot->cpu_addr;
+	if (!map || !slot)
+		return -EINVAL;
+
+	iosys_map_set_vaddr(map, slot->cpu_addr);
+	return 0;
 }
 
-static void chd_dmabuf_vunmap(struct dma_buf *dbuf, void *vaddr)
+static void chd_dmabuf_vunmap(struct dma_buf *dbuf, struct iosys_map *map)
 {
-	/* nothing to do */
+	/* Nothing to do for linear WC buffers */
 }
 
 static int chd_dmabuf_begin_cpu(struct dma_buf *dbuf,
