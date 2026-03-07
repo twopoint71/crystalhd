@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <va/va_backend.h>
+#include <va/va_backend_vpp.h>
 
+#include "7411d.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
 
@@ -40,17 +42,53 @@ static VAStatus crystalhd_stub_unimplemented(VADriverContextP ctx, ...)
     return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
-#define ASSIGN_VTABLE_STUB(vtbl, field) \
-    do { (vtbl)->field = (__typeof__((vtbl)->field))crystalhd_stub_unimplemented; } while (0)
-
-VA_DRIVER_INIT_FUNC(va_crystalhd)
+static VAStatus crystalhd_stub_vpp_filters(VADriverContextP ctx, VAContextID context,
+                                          VAProcFilterType *filters, unsigned int *num_filters)
 {
-    if (!ctx || !ctx->vtable || !ctx->vtable_image || !ctx->vtable_vpp)
+    (void)ctx;
+    (void)context;
+    (void)filters;
+    if (num_filters)
+        *num_filters = 0;
+    return VA_STATUS_ERROR_UNIMPLEMENTED;
+}
+
+static VAStatus crystalhd_stub_vpp_filter_caps(VADriverContextP ctx, VAContextID context,
+                                               VAProcFilterType type, void *caps,
+                                               unsigned int *num_caps)
+{
+    (void)ctx;
+    (void)context;
+    (void)type;
+    (void)caps;
+    if (num_caps)
+        *num_caps = 0;
+    return VA_STATUS_ERROR_UNIMPLEMENTED;
+}
+
+static VAStatus crystalhd_stub_vpp_pipeline_caps(VADriverContextP ctx, VAContextID context,
+                                                 VABufferID *filters, unsigned int num_filters,
+                                                 VAProcPipelineCaps *pipeline_caps)
+{
+    (void)ctx;
+    (void)context;
+    (void)filters;
+    (void)num_filters;
+    (void)pipeline_caps;
+    return VA_STATUS_ERROR_UNIMPLEMENTED;
+}
+
+#define ASSIGN_VTABLE_STUB(vtbl, field) \
+    do { (vtbl)->field = reinterpret_cast<decltype((vtbl)->field)>(crystalhd_stub_unimplemented); } while (0)
+
+static VAStatus crystalhd_driver_init(VADriverContextP ctx)
+{
+    if (!ctx || !ctx->vtable)
         return VA_STATUS_ERROR_INVALID_CONTEXT;
 
     memset(ctx->vtable, 0, sizeof(*ctx->vtable));
-    memset(ctx->vtable_image, 0, sizeof(*ctx->vtable_image));
-    memset(ctx->vtable_vpp, 0, sizeof(*ctx->vtable_vpp));
+    if (ctx->vtable_vpp)
+        memset(ctx->vtable_vpp, 0, sizeof(*ctx->vtable_vpp));
 
     ctx->str_vendor = "Broadcom CrystalHD";
     ctx->max_profiles = 0;
@@ -106,17 +144,29 @@ VA_DRIVER_INIT_FUNC(va_crystalhd)
     ASSIGN_VTABLE_STUB(ctx->vtable, vaUnlockSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaGetSurfaceAttributes);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateSurfaces2);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaExportSurfaceHandles);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaExportSurfaceHandle);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateMFContext);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaMFAddContext);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaMFReleaseContext);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaMFSubmit);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateBuffer2);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaQueryProcessingRate);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaSyncSurface2);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaSyncBuffer);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaCopy);
+    ASSIGN_VTABLE_STUB(ctx->vtable, vaMapBuffer2);
 
-    ctx->vtable_vpp->vaQueryVideoProcFilters = (typeof(ctx->vtable_vpp->vaQueryVideoProcFilters))crystalhd_stub_unimplemented;
-    ctx->vtable_vpp->vaQueryVideoProcFilterCaps = (typeof(ctx->vtable_vpp->vaQueryVideoProcFilterCaps))crystalhd_stub_unimplemented;
-    ctx->vtable_vpp->vaCreateBuffer2 = (typeof(ctx->vtable_vpp->vaCreateBuffer2))crystalhd_stub_unimplemented;
-    ctx->vtable_vpp->vaMapBuffer2 = (typeof(ctx->vtable_vpp->vaMapBuffer2))crystalhd_stub_unimplemented;
-
-    ctx->vtable_image->vaSyncSurface2 = (typeof(ctx->vtable_image->vaSyncSurface2))crystalhd_stub_unimplemented;
+    if (ctx->vtable_vpp) {
+        ctx->vtable_vpp->version = VA_DRIVER_VTABLE_VPP_VERSION;
+        ctx->vtable_vpp->vaQueryVideoProcFilters = crystalhd_stub_vpp_filters;
+        ctx->vtable_vpp->vaQueryVideoProcFilterCaps = crystalhd_stub_vpp_filter_caps;
+        ctx->vtable_vpp->vaQueryVideoProcPipelineCaps = crystalhd_stub_vpp_pipeline_caps;
+    }
 
     return VA_STATUS_SUCCESS;
+}
+
+VAStatus __vaDriverInit_1_22(VADriverContextP ctx)
+{
+    return crystalhd_driver_init(ctx);
 }
