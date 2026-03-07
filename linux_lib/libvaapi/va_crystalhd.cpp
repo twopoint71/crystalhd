@@ -748,12 +748,14 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     return VA_STATUS_SUCCESS;
 }
 
-VAStatus __vaDriverInit_1_22(VADriverContextP ctx)
+extern "C" VAStatus __attribute__((visibility("default")))
+__vaDriverInit_1_22(VADriverContextP ctx)
 {
     return crystalhd_driver_init(ctx);
 }
 
-VAStatus __vaDriverInit_1_0(VADriverContextP ctx)
+extern "C" VAStatus __attribute__((visibility("default")))
+__vaDriverInit_1_0(VADriverContextP ctx)
 {
     return crystalhd_driver_init(ctx);
 }
