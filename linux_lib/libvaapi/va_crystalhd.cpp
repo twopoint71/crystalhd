@@ -6,6 +6,7 @@
 #include <va/va_backend_vpp.h>
 
 #include "7411d.h"
+#include "bc_dts_glob_lnx.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
 
