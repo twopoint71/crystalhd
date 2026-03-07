@@ -185,7 +185,8 @@ static BC_STATUS crystalhd_context_start_decoder(crystalhd_context &ctx,
     if (sts != BC_STS_SUCCESS)
         goto fail;
 
-    BC_INPUT_FORMAT input{};
+    BC_INPUT_FORMAT input;
+    memset(&input, 0, sizeof(input));
     input.mSubtype = subtype;
     input.width = ctx.width;
     input.height = ctx.height;
