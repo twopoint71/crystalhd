@@ -29,11 +29,23 @@ struct crystalhd_context {
     HANDLE device;
 };
 
+struct crystalhd_surface {
+    VASurfaceID id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t rt_format;
+    uint32_t fourcc;
+    uint32_t pitch;
+    std::vector<uint8_t> buffer;
+};
+
 struct crystalhd_driver_state {
     std::vector<crystalhd_config> configs;
     std::vector<crystalhd_context> contexts;
+    std::vector<crystalhd_surface> surfaces;
     VAConfigID next_config_id = 1;
     VAContextID next_context_id = 1;
+    VASurfaceID next_surface_id = 1;
 };
 
 static inline crystalhd_driver_state *crystalhd_drv(VADriverContextP ctx)
@@ -76,6 +88,96 @@ static crystalhd_config *crystalhd_find_config(crystalhd_driver_state *drv, VACo
             return &cfg;
     }
     return nullptr;
+}
+
+static crystalhd_surface *crystalhd_find_surface(crystalhd_driver_state *drv, VASurfaceID id)
+{
+    if (!drv)
+        return nullptr;
+    for (auto &surface : drv->surfaces) {
+        if (surface.id == id)
+            return &surface;
+    }
+    return nullptr;
+}
+
+static uint32_t crystalhd_align_up(uint32_t value, uint32_t align)
+{
+    return (value + align - 1) & ~(align - 1);
+}
+
+static bool crystalhd_surface_format_supported(uint32_t rt_format, uint32_t fourcc)
+{
+    return rt_format == VA_RT_FORMAT_YUV420 && fourcc == VA_FOURCC_NV12;
+}
+
+static VAStatus crystalhd_surface_allocation(uint32_t width, uint32_t height,
+                                             uint32_t rt_format, uint32_t fourcc,
+                                             uint32_t *pitch, size_t *alloc_size)
+{
+    if (!width || !height || !pitch || !alloc_size)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (!crystalhd_surface_format_supported(rt_format, fourcc))
+        return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+
+    // Hardware prefers 64-byte alignment for DMA transfers; follow that for now.
+    uint32_t stride = crystalhd_align_up(width, 64);
+    uint64_t y_plane = static_cast<uint64_t>(stride) * height;
+    uint64_t uv_plane = static_cast<uint64_t>(stride) * ((height + 1) / 2);
+    uint64_t total = y_plane + uv_plane;
+    if (total > SIZE_MAX)
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
+    *pitch = stride;
+    *alloc_size = static_cast<size_t>(total);
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_create_surface(crystalhd_driver_state *drv, uint32_t width,
+                                         uint32_t height, uint32_t rt_format,
+                                         uint32_t fourcc, VASurfaceID *out_id)
+{
+    if (!drv || !out_id)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    uint32_t pitch = 0;
+    size_t buffer_size = 0;
+    VAStatus status = crystalhd_surface_allocation(width, height, rt_format, fourcc,
+                                                   &pitch, &buffer_size);
+    if (status != VA_STATUS_SUCCESS)
+        return status;
+
+    crystalhd_surface surface{};
+    surface.id = drv->next_surface_id++;
+    surface.width = width;
+    surface.height = height;
+    surface.rt_format = rt_format;
+    surface.fourcc = fourcc;
+    surface.pitch = pitch;
+
+    try {
+        surface.buffer.resize(buffer_size);
+    } catch (const std::bad_alloc &) {
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
+
+    drv->surfaces.push_back(std::move(surface));
+    if (out_id)
+        *out_id = drv->surfaces.back().id;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_destroy_surface(crystalhd_driver_state *drv, VASurfaceID id)
+{
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    auto it = std::remove_if(drv->surfaces.begin(), drv->surfaces.end(),
+                             [id](const crystalhd_surface &surf) { return surf.id == id; });
+    if (it == drv->surfaces.end())
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+    drv->surfaces.erase(it, drv->surfaces.end());
+    return VA_STATUS_SUCCESS;
 }
 
 static VAStatus crystalhd_terminate(VADriverContextP ctx)
@@ -208,6 +310,116 @@ static VAStatus crystalhd_CreateContext(VADriverContextP ctx, VAConfigID config_
     if (context_id)
         *context_id = ctx_info.id;
 
+    return VA_STATUS_SUCCESS;
+}
+
+struct crystalhd_surface_format {
+    uint32_t rt_format;
+    uint32_t fourcc;
+};
+
+static bool crystalhd_resolve_surface_format(uint32_t request, const VASurfaceAttrib *attrib_list,
+                                             unsigned int num_attribs,
+                                             crystalhd_surface_format *format)
+{
+    crystalhd_surface_format resolved{};
+
+    if (request & VA_RT_FORMAT_YUV420)
+        resolved.rt_format = VA_RT_FORMAT_YUV420;
+    else if (request == VA_FOURCC_NV12)
+        resolved.fourcc = VA_FOURCC_NV12;
+
+    for (unsigned int i = 0; i < num_attribs && attrib_list; ++i) {
+        if (attrib_list[i].type == VASurfaceAttribPixelFormat) {
+            resolved.fourcc = attrib_list[i].value.value.i;
+        }
+    }
+
+    if (!resolved.rt_format && resolved.fourcc == VA_FOURCC_NV12)
+        resolved.rt_format = VA_RT_FORMAT_YUV420;
+    if (!resolved.fourcc && resolved.rt_format == VA_RT_FORMAT_YUV420)
+        resolved.fourcc = VA_FOURCC_NV12;
+
+    if (!crystalhd_surface_format_supported(resolved.rt_format, resolved.fourcc))
+        return false;
+
+    if (format)
+        *format = resolved;
+    return true;
+}
+
+static VAStatus crystalhd_allocate_surfaces(VADriverContextP ctx, uint32_t width, uint32_t height,
+                                            uint32_t request_format,
+                                            const VASurfaceAttrib *attrib_list,
+                                            unsigned int num_attribs,
+                                            unsigned int num_surfaces, VASurfaceID *surfaces)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+    if (!surfaces || !num_surfaces)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    crystalhd_surface_format resolved{};
+    if (!crystalhd_resolve_surface_format(request_format, attrib_list, num_attribs, &resolved))
+        return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+
+    std::vector<VASurfaceID> allocated;
+    allocated.reserve(num_surfaces);
+
+    for (unsigned int i = 0; i < num_surfaces; ++i) {
+        VAStatus status = crystalhd_create_surface(drv, width, height, resolved.rt_format,
+                                                   resolved.fourcc, &surfaces[i]);
+        if (status != VA_STATUS_SUCCESS) {
+            for (VASurfaceID id : allocated)
+                crystalhd_destroy_surface(drv, id);
+            return status;
+        }
+        allocated.push_back(surfaces[i]);
+    }
+
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_CreateSurfaces(VADriverContextP ctx, int width, int height,
+                                         int format, int num_surfaces, VASurfaceID *surfaces)
+{
+    if (width <= 0 || height <= 0 || num_surfaces <= 0)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    return crystalhd_allocate_surfaces(ctx, static_cast<uint32_t>(width),
+                                       static_cast<uint32_t>(height),
+                                       static_cast<uint32_t>(format), nullptr, 0,
+                                       static_cast<unsigned int>(num_surfaces), surfaces);
+}
+
+static VAStatus crystalhd_CreateSurfaces2(VADriverContextP ctx, unsigned int format,
+                                          unsigned int width, unsigned int height,
+                                          VASurfaceID *surfaces, unsigned int num_surfaces,
+                                          const VASurfaceAttrib *attrib_list,
+                                          unsigned int num_attribs)
+{
+    if (!width || !height || !num_surfaces)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    return crystalhd_allocate_surfaces(ctx, width, height, format, attrib_list, num_attribs,
+                                       num_surfaces, surfaces);
+}
+
+static VAStatus crystalhd_DestroySurfaces(VADriverContextP ctx, VASurfaceID *surface_list,
+                                          int num_surfaces)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+    if (!surface_list || num_surfaces <= 0)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    for (int i = 0; i < num_surfaces; ++i) {
+        VAStatus status = crystalhd_destroy_surface(drv, surface_list[i]);
+        if (status != VA_STATUS_SUCCESS)
+            return status;
+    }
     return VA_STATUS_SUCCESS;
 }
 
@@ -380,8 +592,8 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ctx->vtable->vaCreateConfig = crystalhd_CreateConfig;
     ctx->vtable->vaDestroyConfig = crystalhd_DestroyConfig;
     ctx->vtable->vaQueryConfigAttributes = crystalhd_QueryConfigAttributes;
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateSurfaces);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaDestroySurfaces);
+    ctx->vtable->vaCreateSurfaces = crystalhd_CreateSurfaces;
+    ctx->vtable->vaDestroySurfaces = crystalhd_DestroySurfaces;
     ctx->vtable->vaCreateContext = crystalhd_CreateContext;
     ctx->vtable->vaDestroyContext = crystalhd_DestroyContext;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateBuffer);
@@ -417,7 +629,7 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ASSIGN_VTABLE_STUB(ctx->vtable, vaLockSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaUnlockSurface);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaGetSurfaceAttributes);
-    ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateSurfaces2);
+    ctx->vtable->vaCreateSurfaces2 = crystalhd_CreateSurfaces2;
     ASSIGN_VTABLE_STUB(ctx->vtable, vaExportSurfaceHandle);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaCreateMFContext);
     ASSIGN_VTABLE_STUB(ctx->vtable, vaMFAddContext);
