@@ -133,6 +133,7 @@ struct crystalhd_image_record {
     std::vector<uint8_t> storage;
     bool derived = false;
     VASurfaceID surface = VA_INVALID_SURFACE;
+    bool acquired = false;
 };
 
 static bool crystalhd_surface_get_planes(crystalhd_surface &surface,
@@ -1120,14 +1121,15 @@ static VAStatus crystalhd_DestroyImage(VADriverContextP ctx, VAImageID image_id)
     if (!drv)
         return VA_STATUS_ERROR_INVALID_CONTEXT;
 
-    auto it = std::remove_if(drv->images.begin(), drv->images.end(),
-                             [image_id](const crystalhd_image_record &image) {
-                                 return image.image.image_id == image_id;
-                             });
-    if (it == drv->images.end())
-        return VA_STATUS_ERROR_INVALID_IMAGE;
-    drv->images.erase(it, drv->images.end());
-    return VA_STATUS_SUCCESS;
+    for (auto it = drv->images.begin(); it != drv->images.end(); ++it) {
+        if (it->image.image_id != image_id)
+            continue;
+        if (it->acquired)
+            return VA_STATUS_ERROR_SURFACE_BUSY;
+        drv->images.erase(it);
+        return VA_STATUS_SUCCESS;
+    }
+    return VA_STATUS_ERROR_INVALID_IMAGE;
 }
 
 static VAStatus crystalhd_DeriveImage(VADriverContextP ctx, VASurfaceID surface_id,
@@ -1230,6 +1232,58 @@ static VAStatus crystalhd_PutImage(VADriverContextP ctx, VASurfaceID surface_id,
     if (!crystalhd_copy_image_to_surface(src, image->image.pitches[0], *surface))
         return VA_STATUS_ERROR_OPERATION_FAILED;
 
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_AcquireBufferHandle(VADriverContextP ctx, VABufferID buf_id,
+                                              VABufferInfo *buf_info)
+{
+    if (!buf_info)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    crystalhd_image_record *image = crystalhd_find_image_by_buffer(drv, buf_id);
+    if (!image)
+        return VA_STATUS_ERROR_INVALID_BUFFER;
+    if (image->acquired)
+        return VA_STATUS_ERROR_SURFACE_BUSY;
+
+    if (image->derived && image->surface != VA_INVALID_SURFACE) {
+        VAStatus status = crystalhd_SyncSurface(ctx, image->surface);
+        if (status != VA_STATUS_SUCCESS)
+            return status;
+    }
+
+    uint32_t requested = buf_info->mem_type;
+    if (requested && !(requested & VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR))
+        return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
+
+    uint8_t *addr = crystalhd_image_data_ptr(drv, *image);
+    if (!addr)
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+
+    memset(buf_info, 0, sizeof(*buf_info));
+    buf_info->mem_type = VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR;
+    buf_info->type = VAImageBufferType;
+    buf_info->handle = reinterpret_cast<uintptr_t>(addr);
+    buf_info->mem_size = image->image.data_size;
+    image->acquired = true;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_ReleaseBufferHandle(VADriverContextP ctx, VABufferID buf_id)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    crystalhd_image_record *image = crystalhd_find_image_by_buffer(drv, buf_id);
+    if (!image)
+        return VA_STATUS_ERROR_INVALID_BUFFER;
+    image->acquired = false;
     return VA_STATUS_SUCCESS;
 }
 
@@ -1815,6 +1869,8 @@ static VAStatus crystalhd_driver_init(VADriverContextP ctx)
     ctx->vtable->vaMapBuffer = crystalhd_MapBuffer;
     ctx->vtable->vaUnmapBuffer = crystalhd_UnmapBuffer;
     ctx->vtable->vaDestroyBuffer = crystalhd_DestroyBuffer;
+    ctx->vtable->vaAcquireBufferHandle = crystalhd_AcquireBufferHandle;
+    ctx->vtable->vaReleaseBufferHandle = crystalhd_ReleaseBufferHandle;
     ctx->vtable->vaBeginPicture = crystalhd_BeginPicture;
     ctx->vtable->vaRenderPicture = crystalhd_RenderPicture;
     ctx->vtable->vaEndPicture = crystalhd_EndPicture;
