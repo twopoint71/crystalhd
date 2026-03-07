@@ -7,6 +7,7 @@
 #include <new>
 #include <vector>
 #include <limits>
+#include <unordered_map>
 
 #include <va/va.h>
 #include <va/va_backend.h>
@@ -69,7 +70,20 @@ struct crystalhd_context {
 
     std::vector<crystalhd_va_buffer> buffers;
     crystalhd_pending_picture pending_picture;
+
+    struct surface_status {
+        enum class state {
+            idle,
+            submitted,
+            pending_output
+        } current_state = state::idle;
+        uint64_t timestamp = 0;
+    };
+
+    std::unordered_map<VASurfaceID, surface_status> surface_states;
 };
+
+struct crystalhd_driver_state;
 
 static crystalhd_context::crystalhd_va_buffer * __attribute__((unused))
 crystalhd_find_buffer(crystalhd_context &ctx,
@@ -80,15 +94,6 @@ crystalhd_find_buffer(crystalhd_context &ctx,
             return &buffer;
     }
     return nullptr;
-}
-
-static crystalhd_context::crystalhd_va_buffer *crystalhd_alloc_buffer(crystalhd_driver_state *drv,
-                                                                      crystalhd_context &ctx)
-{
-    crystalhd_context::crystalhd_va_buffer buffer;
-    buffer.id = drv->next_buffer_id++;
-    ctx.buffers.push_back(std::move(buffer));
-    return &ctx.buffers.back();
 }
 
 struct crystalhd_surface {
@@ -116,6 +121,15 @@ struct crystalhd_driver_state {
     VABufferID next_buffer_id = 1;
     HANDLE surface_device = nullptr;
 };
+
+static crystalhd_context::crystalhd_va_buffer *crystalhd_alloc_buffer(crystalhd_driver_state *drv,
+                                                                      crystalhd_context &ctx)
+{
+    crystalhd_context::crystalhd_va_buffer buffer;
+    buffer.id = drv->next_buffer_id++;
+    ctx.buffers.push_back(std::move(buffer));
+    return &ctx.buffers.back();
+}
 
 static inline crystalhd_driver_state *crystalhd_drv(VADriverContextP ctx)
 {
@@ -480,7 +494,39 @@ static VAStatus crystalhd_EndPicture(VADriverContextP ctx, VAContextID context)
             return crystalhd_status_to_va(sts);
     }
 
+    if (va_ctx->pending_picture.target != VA_INVALID_SURFACE)
+        va_ctx->surface_states[va_ctx->pending_picture.target].current_state =
+            crystalhd_context::surface_status::state::pending_output;
+
     va_ctx->pending_picture.reset();
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_SyncSurface(VADriverContextP ctx, VAContextID context,
+                                      VASurfaceID render_target)
+{
+    auto *drv = crystalhd_drv(ctx);
+    if (!drv)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    crystalhd_context *va_ctx = crystalhd_find_context(drv, context);
+    if (!va_ctx)
+        return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+    auto &state = va_ctx->surface_states[render_target];
+    if (state.current_state != crystalhd_context::surface_status::state::pending_output)
+        return VA_STATUS_SUCCESS;
+
+    BC_DTS_PROC_OUT proc_out;
+    memset(&proc_out, 0, sizeof(proc_out));
+    proc_out.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    BC_STATUS sts = DtsProcOutputNoCopy(va_ctx->device, 16, &proc_out);
+    if (sts == BC_STS_TIMEOUT)
+        return VA_STATUS_ERROR_SURFACE_BUSY;
+    if (sts != BC_STS_SUCCESS)
+        return crystalhd_status_to_va(sts);
+
+    state.current_state = crystalhd_context::surface_status::state::idle;
     return VA_STATUS_SUCCESS;
 }
 
