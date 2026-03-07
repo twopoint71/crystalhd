@@ -64,6 +64,8 @@ For now we should prototype the IOCTL + exporter in the driver and teach `va_cry
 - `BCM_IOC_EXPORT_DMABUF` exports RX capture buffers once per request and returns DMA-BUF file descriptors plus basic layout metadata; surfaces close those fds when destroyed.
 - `va_crystalhd` now calls `DtsExportRxDmabufs()` when creating NV12 surfaces and automatically falls back to host malloc buffers if the IOCTL fails or the kernel returns fewer fds than requested.
 - The VA shim opens a dedicated CrystalHD handle for surface allocation so surface creation still works before a context is established.
+- VA contexts now open/configure/start the H.264 decoder immediately, track VA buffers in a reuse-friendly pool, and expose `vaCreateBuffer`/`vaRenderPicture`/`vaEndPicture` to push aggregated slice data through `DtsProcInput`.
+- Each surface records a lightweight state machine (idle/submitted/pending output) so `vaSyncSurface` can call `DtsProcOutputNoCopy` only when a surface is expected to receive a frame, minimizing polling overhead on low-end CPUs.
 
 ## Open Questions
 - How should we stage SPS/PPS/SEI blobs for CrystalHD? (Need to inspect `BC_INPUT_FORMAT` expectations.)
