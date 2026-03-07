@@ -68,6 +68,7 @@ struct crystalhd_cmd {
 	uint32_t		cin_wait_exit;
 	uint32_t		pwr_state_change; /* 0 is running, 1 is going to suspend, 2 is going to resume */
 	struct crystalhd_hw		*hw_ctx;
+	void			*dmabuf_priv;
 };
 
 typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_data *);

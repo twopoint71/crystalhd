@@ -31,6 +31,7 @@
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_hw.h"
+#include "crystalhd_dmabuf.h"
 
 static struct crystalhd_user *bc_cproc_get_uid(struct crystalhd_cmd *ctx)
 {
@@ -123,6 +124,15 @@ static BC_STATUS bc_cproc_notify_mode(struct crystalhd_cmd *ctx,
 
 	/* Setup Hardware DMA rings */
 	return crystalhd_hw_setup_dma_rings(ctx->hw_ctx);
+}
+
+static BC_STATUS bc_cproc_export_dmabuf(struct crystalhd_cmd *ctx,
+					 crystalhd_ioctl_data *idata)
+{
+	if (!ctx || !idata)
+		return BC_STS_INV_ARG;
+
+	return crystalhd_dmabuf_export(ctx, &idata->udata.u.RxDmabuf);
 }
 
 static BC_STATUS bc_cproc_get_version(struct crystalhd_cmd *ctx,
@@ -876,6 +886,8 @@ BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data 
 	ctx->user[idata->u_id].mode = DTS_MODE_INV;
 	ctx->user[idata->u_id].in_use = 0;
 
+	crystalhd_dmabuf_release_all(ctx);
+
 	dev_info(chddev(), "Closing user[%x] handle via ioctl with mode %x\n", idata->u_id, mode);
 
 	if (((mode & 0xFF) == DTS_DIAG_MODE) ||
@@ -922,6 +934,7 @@ static const struct crystalhd_cmd_tbl	g_crystalhd_cproc_tbl[] = {
 	{ BCM_IOC_GET_DRV_STAT,		bc_cproc_get_stats,	0},
 	{ BCM_IOC_RST_DRV_STAT,		bc_cproc_reset_stats,	0},
 	{ BCM_IOC_NOTIFY_MODE,		bc_cproc_notify_mode,	0},
+	{ BCM_IOC_EXPORT_DMABUF,	bc_cproc_export_dmabuf,	0},
 	{ BCM_IOC_RELEASE,			bc_cproc_release_user,  0},
 	{ BCM_IOC_END,				NULL},
 };
@@ -1118,6 +1131,7 @@ BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 		ctx->user[i].in_use = 0;
 		ctx->user[i].mode = DTS_MODE_INV;
 	}
+	ctx->dmabuf_priv = NULL;
 
 	ctx->hw_ctx = (struct crystalhd_hw*)kmalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
 
@@ -1144,6 +1158,7 @@ BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 BC_STATUS __exit crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 {
 	dev_dbg(chddev(), "Deleting Command context..\n");
+	crystalhd_dmabuf_release_all(ctx);
 
 	ctx->adp = NULL;
 

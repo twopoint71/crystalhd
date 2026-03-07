@@ -1768,6 +1768,32 @@ DtsReleaseOutputBuffs(
 	return DtsRelRxBuff(Ctx, &Ctx->pOutData->u.RxBuffs, FALSE);
 }
 
+DRVIFLIB_API BC_STATUS
+DtsExportRxDmabufs(
+    HANDLE hDevice,
+    BC_RX_DMABUF_EXPORT *desc)
+{
+	BC_IOCTL_DATA *pIocData = NULL;
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	BC_STATUS sts;
+
+	if (!desc)
+		return BC_STS_INV_ARG;
+
+	DTS_GET_CTX(hDevice, Ctx);
+
+	if (!(pIocData = DtsAllocIoctlData(Ctx)))
+		return BC_STS_INSUFF_RES;
+
+	memcpy(&pIocData->u.RxDmabuf, desc, sizeof(*desc));
+	sts = DtsDrvCmd(Ctx, BCM_IOC_EXPORT_DMABUF, 0, pIocData, TRUE);
+	if (sts == BC_STS_SUCCESS)
+		memcpy(desc, &pIocData->u.RxDmabuf, sizeof(*desc));
+
+	DtsRelIoctlData(Ctx, pIocData);
+	return sts;
+}
+
 DRVIFLIB_INT_API BC_STATUS
 DtsSendData( HANDLE  hDevice ,
 				 uint8_t *pUserData,

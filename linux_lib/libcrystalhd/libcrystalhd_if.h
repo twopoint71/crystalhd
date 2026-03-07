@@ -913,6 +913,12 @@ DtsReleaseOutputBuffs(
     BOOL   fChange
     );
 
+DRVIFLIB_API BC_STATUS
+DtsExportRxDmabufs(
+    HANDLE hDevice,
+    BC_RX_DMABUF_EXPORT *desc
+    );
+
 
 /*****************************************************************************
 
