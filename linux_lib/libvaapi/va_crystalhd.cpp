@@ -34,7 +34,51 @@ struct crystalhd_context {
     bool capture_started = false;
     uint32_t video_algo = BC_VID_ALGO_H264;
     BC_MEDIA_SUBTYPE media_subtype = BC_MSUBTYPE_INVALID;
+
+    struct crystalhd_va_buffer {
+        VABufferID id = VA_INVALID_ID;
+        VABufferType type = (VABufferType)0;
+        size_t num_elements = 0;
+        size_t element_size = 0;
+        bool mapped = false;
+        void *map_ptr = nullptr;
+        // Re-use the storage vector to avoid malloc/free churn on low-end CPUs.
+        std::vector<uint8_t> storage;
+    };
+
+    struct crystalhd_pending_picture {
+        bool in_progress = false;
+        VASurfaceID target = VA_INVALID_SURFACE;
+        VAPictureParameterBufferH264 pic_params{};
+        std::vector<VASliceParameterBufferH264> slice_params;
+        std::vector<uint8_t> slice_data;
+        std::vector<uint8_t> sei_payload;
+
+        void reset()
+        {
+            in_progress = false;
+            target = VA_INVALID_SURFACE;
+            slice_params.clear();
+            slice_data.clear();
+            sei_payload.clear();
+        }
+    };
+
+    std::vector<crystalhd_va_buffer> buffers;
+    VABufferID next_buffer_id = 1;
+    crystalhd_pending_picture pending_picture;
 };
+
+static crystalhd_context::crystalhd_va_buffer * __attribute__((unused))
+crystalhd_find_buffer(crystalhd_context &ctx,
+                      VABufferID id)
+{
+    for (auto &buffer : ctx.buffers) {
+        if (buffer.id == id)
+            return &buffer;
+    }
+    return nullptr;
+}
 
 struct crystalhd_surface {
     VASurfaceID id;

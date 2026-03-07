@@ -8,7 +8,7 @@ VA_CFLAGS ?= $(shell pkg-config --cflags libva 2>/dev/null)
 VA_LIBS ?= $(shell pkg-config --libs libva 2>/dev/null)
 
 INC = -I../libcrystalhd -I../../include -I../../include/link -I../../include/flea $(VA_CFLAGS)
-LIBCRYSTALHD_DIR ?= ../libcrystalhd/.libs
+LIBCRYSTALHD_DIR ?= ../libcrystalhd
 LIBS = $(VA_LIBS) -L$(LIBCRYSTALHD_DIR) -lcrystalhd
 
 TARGET = crystalhd_drv_video.so
