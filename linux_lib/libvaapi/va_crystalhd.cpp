@@ -297,6 +297,10 @@ static void crystalhd_mark_surface_ready(crystalhd_context &ctx,
     ctx.surface_waiting_output = false;
     if (ctx.current_target_surface == &surface)
         ctx.current_target_surface = nullptr;
+
+    const char *path = surface.dmabuf_backed ? "DMA-BUF" : "memcpy";
+    fprintf(stderr, "crystalhd: completed surface %u via %s\n",
+            surface.id, path);
 }
 
 static crystalhd_context::crystalhd_va_buffer *crystalhd_alloc_buffer(crystalhd_driver_state *drv,
