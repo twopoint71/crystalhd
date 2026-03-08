@@ -72,7 +72,7 @@ enum _BC_PCI_DEV_IDS{
 enum _BC_DTS_GLOBALS {
 	BC_MAX_FW_CMD_BUFF_SZ	= 0x40,		/* FW passthrough cmd/rsp buffer size */
 	PCI_CFG_SIZE		= 256,		/* PCI config size buffer */
-	BC_IOCTL_DATA_POOL_SIZE	= 8,		/* BC_IOCTL_DATA Pool size */
+	BC_IOCTL_DATA_POOL_SIZE	= 32,		/* BC_IOCTL_DATA Pool size */
 	BC_LINK_MAX_OPENS	= 3,		/* Maximum simultaneous opens*/
 	BC_LINK_MAX_SGLS	= 1024,		/* Maximum SG elements 4M/4K */
 	BC_TX_LIST_CNT		= 2,		/* Max Tx DMA Rings */
@@ -229,7 +229,7 @@ typedef struct _BC_DEC_OUT_BUFF{
 	uint32_t		BadFrCnt;
 } BC_DEC_OUT_BUFF;
 
-#define BC_MAX_DMABUF_EXPORT	16
+#define BC_MAX_DMABUF_EXPORT	32
 
 typedef struct _BC_RX_DMABUF_DESC {
 	uint32_t	index;

@@ -234,8 +234,10 @@ int crystalhd_dmabuf_export(struct crystalhd_cmd *ctx,
 	crystalhd_dmabuf_release_all(ctx);
 
 	count = req->requested;
-	if (!count || count > BC_MAX_DMABUF_EXPORT)
+	if (!count)
 		count = min_t(unsigned int, BC_MAX_DMABUF_EXPORT, 6);
+	else if (count > BC_MAX_DMABUF_EXPORT)
+		count = BC_MAX_DMABUF_EXPORT;
 
 	width = req->width ? req->width : 1280;
 	height = req->height ? req->height : 720;

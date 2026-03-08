@@ -210,6 +210,7 @@ struct crystalhd_driver_state {
     VASurfaceID next_surface_id = 1;
     VABufferID next_buffer_id = 1;
     VAImageID next_image_id = 1;
+    HANDLE surface_device = nullptr;
 };
 
 static inline DTS_LIB_CONTEXT *crystalhd_dts_ctx(HANDLE handle);
@@ -297,6 +298,15 @@ static void crystalhd_try_upgrade_surfaces(crystalhd_driver_state *drv,
     auto *dts_ctx = crystalhd_dts_ctx(ctx.device);
     if (!dts_ctx)
         return;
+
+    for (auto &surface : drv->surfaces) {
+        if (!surface.dmabuf_backed)
+            continue;
+        if (surface.dmabuf_registered && surface.dmabuf_context == ctx.id)
+            continue;
+        if (crystalhd_surface_register_dmabuf(ctx, surface) != VA_STATUS_SUCCESS)
+            continue;
+    }
 
     std::vector<crystalhd_surface *> candidates;
     candidates.reserve(drv->surfaces.size());
@@ -393,6 +403,22 @@ static crystalhd_context::crystalhd_va_buffer *crystalhd_alloc_buffer(crystalhd_
 static inline crystalhd_driver_state *crystalhd_drv(VADriverContextP ctx)
 {
     return ctx ? reinterpret_cast<crystalhd_driver_state *>(ctx->pDriverData) : nullptr;
+}
+
+static HANDLE crystalhd_get_surface_device(crystalhd_driver_state *drv)
+{
+    if (!drv)
+        return nullptr;
+
+    if (!drv->surface_device) {
+        HANDLE device = nullptr;
+        uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB;
+        if (DtsDeviceOpen(&device, mode) != BC_STS_SUCCESS)
+            return nullptr;
+        drv->surface_device = device;
+    }
+
+    return drv->surface_device;
 }
 
 static VAStatus crystalhd_status_to_va(BC_STATUS status)
@@ -1597,6 +1623,38 @@ static VAStatus crystalhd_create_surface(crystalhd_driver_state *drv, uint32_t w
     return VA_STATUS_SUCCESS;
 }
 
+static VAStatus crystalhd_create_surface_from_dmabuf(crystalhd_driver_state *drv,
+                                                     uint32_t width, uint32_t height,
+                                                     uint32_t rt_format,
+                                                     uint32_t fourcc,
+                                                     const BC_RX_DMABUF_DESC &desc,
+                                                     VASurfaceID *out_id)
+{
+    if (!drv || desc.dmabuf_fd < 0)
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+
+    crystalhd_surface surface{};
+    surface.id = drv->next_surface_id++;
+    surface.width = width;
+    surface.height = height;
+    surface.rt_format = rt_format;
+    surface.fourcc = fourcc;
+    surface.pitch = desc.y_stride;
+    surface.dmabuf_backed = true;
+    surface.dmabuf_fd = desc.dmabuf_fd;
+    surface.dmabuf_index = desc.index;
+
+    if (!crystalhd_surface_map_dmabuf(surface, desc)) {
+        ::close(desc.dmabuf_fd);
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
+
+    drv->surfaces.push_back(std::move(surface));
+    if (out_id)
+        *out_id = drv->surfaces.back().id;
+    return VA_STATUS_SUCCESS;
+}
+
 static VAStatus crystalhd_destroy_surface(crystalhd_driver_state *drv,
                                           VASurfaceID id)
 {
@@ -1640,6 +1698,8 @@ static VAStatus crystalhd_terminate(VADriverContextP ctx)
         if (surface.dmabuf_fd >= 0)
             ::close(surface.dmabuf_fd);
     }
+    if (drv->surface_device)
+        DtsDeviceClose(drv->surface_device);
     drv->contexts.clear();
     drv->configs.clear();
     drv->images.clear();
@@ -1827,7 +1887,48 @@ static VAStatus crystalhd_allocate_surfaces(VADriverContextP ctx, uint32_t width
     std::vector<VASurfaceID> allocated;
     allocated.reserve(num_surfaces);
 
-    for (unsigned int i = 0; i < num_surfaces; ++i) {
+    unsigned int exported = 0;
+    HANDLE surf_dev = kCrystalhdEnableDmabufSurfaces ?
+        crystalhd_get_surface_device(drv) : nullptr;
+    if (surf_dev) {
+        BC_RX_DMABUF_EXPORT dmabuf{};
+        dmabuf.requested = std::min<unsigned int>(num_surfaces, BC_MAX_DMABUF_EXPORT);
+        dmabuf.width = width;
+        dmabuf.height = height;
+        dmabuf.format = resolved.fourcc;
+        BC_STATUS sts = DtsExportRxDmabufs(surf_dev, &dmabuf);
+        if (sts == BC_STS_SUCCESS && dmabuf.allocated) {
+            exported = std::min<unsigned int>(dmabuf.allocated, num_surfaces);
+            for (unsigned int i = 0; i < exported; ++i) {
+                VAStatus status = crystalhd_create_surface_from_dmabuf(drv, width, height,
+                                                                      resolved.rt_format,
+                                                                      resolved.fourcc,
+                                                                      dmabuf.desc[i],
+                                                                      &surfaces[i]);
+                if (status != VA_STATUS_SUCCESS) {
+                    for (VASurfaceID id : allocated)
+                        crystalhd_destroy_surface(drv, id);
+                    for (unsigned int j = i; j < dmabuf.allocated && j < BC_MAX_DMABUF_EXPORT; ++j) {
+                        if (dmabuf.desc[j].dmabuf_fd >= 0)
+                            ::close(dmabuf.desc[j].dmabuf_fd);
+                    }
+                    return status;
+                }
+                allocated.push_back(surfaces[i]);
+            }
+            for (unsigned int i = exported; i < dmabuf.allocated && i < BC_MAX_DMABUF_EXPORT; ++i) {
+                if (dmabuf.desc[i].dmabuf_fd >= 0)
+                    ::close(dmabuf.desc[i].dmabuf_fd);
+            }
+        } else if (dmabuf.allocated) {
+            for (unsigned int i = 0; i < dmabuf.allocated && i < BC_MAX_DMABUF_EXPORT; ++i) {
+                if (dmabuf.desc[i].dmabuf_fd >= 0)
+                    ::close(dmabuf.desc[i].dmabuf_fd);
+            }
+        }
+    }
+
+    for (unsigned int i = exported; i < num_surfaces; ++i) {
         VAStatus status = crystalhd_create_surface(drv, width, height, resolved.rt_format,
                                                    resolved.fourcc, &surfaces[i]);
         if (status != VA_STATUS_SUCCESS) {
