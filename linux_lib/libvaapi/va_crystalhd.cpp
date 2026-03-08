@@ -838,18 +838,19 @@ static VAStatus crystalhd_EndPicture(VADriverContextP ctx, VAContextID context)
     if (!va_ctx || !va_ctx->pending_picture.in_progress)
         return VA_STATUS_ERROR_INVALID_CONTEXT;
 
+    VASurfaceID target = va_ctx->pending_picture.target;
+
     if (!va_ctx->pending_picture.pending_slice_params.empty() ||
         !va_ctx->pending_picture.pending_slice_data.empty())
         return VA_STATUS_ERROR_INVALID_PARAMETER;
 
-    if (va_ctx->pending_picture.target != VA_INVALID_SURFACE)
-        va_ctx->surface_states[va_ctx->pending_picture.target].current_state =
+    if (target != VA_INVALID_SURFACE)
+        va_ctx->surface_states[target].current_state =
             crystalhd_context::surface_status::state::pending_output;
 
     va_ctx->pending_picture.reset();
-    if (crystalhd_surface *surface =
-            crystalhd_find_surface(drv, va_ctx->pending_picture.target))
-        va_ctx->current_target_surface = surface;
+    va_ctx->current_target_surface = crystalhd_find_surface(drv, target);
+    va_ctx->surface_waiting_output = va_ctx->current_target_surface != nullptr;
     return VA_STATUS_SUCCESS;
 }
 
