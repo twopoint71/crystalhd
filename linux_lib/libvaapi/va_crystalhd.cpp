@@ -906,7 +906,7 @@ static VAStatus crystalhd_SyncSurface(VADriverContextP ctx, VASurfaceID render_t
     if (!crystalhd_surface_get_planes(*surface, &y_ptr, &y_size, &uv_ptr, &uv_size))
         return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
 
-    BC_DTS_PROC_OUT proc_out;
+    auto &proc_out = va_ctx->last_proc_out;
     memset(&proc_out, 0, sizeof(proc_out));
     proc_out.Ybuff = y_ptr;
     proc_out.YbuffSz = static_cast<uint32_t>(y_size);
