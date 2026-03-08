@@ -608,6 +608,10 @@ static VAStatus crystalhd_process_slice_pair(crystalhd_context &ctx,
 
         const uint8_t *slice_ptr = slice_data_base + slice->slice_data_offset;
         try {
+            ctx.pending_picture.pending_bitstream.push_back(0x00);
+            ctx.pending_picture.pending_bitstream.push_back(0x00);
+            ctx.pending_picture.pending_bitstream.push_back(0x00);
+            ctx.pending_picture.pending_bitstream.push_back(0x01);
             ctx.pending_picture.pending_bitstream.insert(
                 ctx.pending_picture.pending_bitstream.end(),
                 slice_ptr, slice_ptr + slice->slice_data_size);
