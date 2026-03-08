@@ -160,6 +160,8 @@ struct crystalhd_surface {
     void *dmabuf_map = nullptr;
     size_t dmabuf_map_len = 0;
     std::vector<uint8_t> buffer;
+    BC_PIC_INFO_BLOCK last_pic_info{};
+    bool have_pic_info = false;
 };
 
 struct crystalhd_image_record {
@@ -301,6 +303,9 @@ static void crystalhd_mark_surface_ready(crystalhd_context &ctx,
     const char *path = surface.dmabuf_backed ? "DMA-BUF" : "memcpy";
     fprintf(stderr, "crystalhd: completed surface %u via %s\n",
             surface.id, path);
+
+    surface.last_pic_info = proc_out.PicInfo;
+    surface.have_pic_info = true;
 }
 
 static crystalhd_context::crystalhd_va_buffer *crystalhd_alloc_buffer(crystalhd_driver_state *drv,
@@ -1578,6 +1583,7 @@ static VAStatus crystalhd_destroy_surface(crystalhd_driver_state *drv,
     surface->dmabuf_in_use = false;
     if (surface->dmabuf_fd >= 0)
         ::close(surface->dmabuf_fd);
+    surface->have_pic_info = false;
     drv->surfaces.erase(std::remove_if(drv->surfaces.begin(), drv->surfaces.end(),
                                        [id](const crystalhd_surface &surf) {
                                            return surf.id == id;
