@@ -81,6 +81,9 @@ struct crystalhd_context {
 
     std::vector<crystalhd_va_buffer> buffers;
     crystalhd_pending_picture pending_picture;
+    BC_PIB_EXT_H264 user_pib_ext{};
+    VAPictureParameterBufferH264 last_pic_param{};
+    bool have_pic_param = false;
 
     struct surface_status {
         enum class state {
@@ -99,6 +102,10 @@ struct crystalhd_driver_state;
 static VAStatus crystalhd_status_to_va(BC_STATUS status);
 static crystalhd_context *crystalhd_find_context(crystalhd_driver_state *drv,
                                                  VAContextID id);
+static inline DTS_LIB_CONTEXT *crystalhd_dts_ctx(HANDLE handle)
+{
+    return reinterpret_cast<DTS_LIB_CONTEXT *>(handle);
+}
 
 static crystalhd_context::crystalhd_va_buffer * __attribute__((unused))
 crystalhd_find_buffer(crystalhd_context &ctx,
@@ -110,6 +117,11 @@ crystalhd_find_buffer(crystalhd_context &ctx,
     }
     return nullptr;
 }
+
+static VAStatus crystalhd_handle_picture_parameters(crystalhd_context &ctx,
+                                                    const uint8_t *data,
+                                                    size_t stride,
+                                                    size_t count);
 
 struct crystalhd_surface {
     VASurfaceID id;
@@ -181,10 +193,7 @@ struct crystalhd_driver_state {
     HANDLE surface_device = nullptr;
 };
 
-static inline DTS_LIB_CONTEXT *crystalhd_dts_ctx(HANDLE handle)
-{
-    return reinterpret_cast<DTS_LIB_CONTEXT *>(handle);
-}
+static inline DTS_LIB_CONTEXT *crystalhd_dts_ctx(HANDLE handle);
 
 static bool crystalhd_surface_map_dmabuf(crystalhd_surface &surface,
                                          const BC_RX_DMABUF_DESC &desc)
@@ -752,6 +761,12 @@ static VAStatus crystalhd_RenderPicture(VADriverContextP ctx, VAContextID contex
 
         switch (buffer->type) {
         case VAPictureParameterBufferType:
+            status = crystalhd_handle_picture_parameters(*va_ctx,
+                                                         buffer->storage.data(),
+                                                         buffer->element_size,
+                                                         buffer->num_elements);
+            if (status != VA_STATUS_SUCCESS)
+                return status;
             va_ctx->pending_picture.last_pic_param = id;
             break;
         case VASliceParameterBufferType:
@@ -1074,6 +1089,38 @@ static bool crystalhd_copy_image_to_surface(const uint8_t *src, uint32_t src_pit
                                 surface.uv_stride ? surface.uv_stride : surface.pitch,
                                 src_uv, src_pitch, surface.width,
                                 (surface.height + 1) / 2);
+}
+
+static bool crystalhd_update_pic_info_from_h264(crystalhd_context &ctx,
+                                                const VAPictureParameterBufferH264 &pic)
+{
+    BC_PIB_EXT_H264 &ext = ctx.user_pib_ext;
+    ext.valid = 0;
+    if (pic.seq_fields.bits.chroma_format_idc == 1 &&
+        ctx.surface_states.size()) {
+        ext.valid |= H264_VALID_VUI;
+        ext.chroma_top = pic.picture_height_in_mbs_minus1 + 1;
+        ext.chroma_bottom = pic.picture_height_in_mbs_minus1 + 1;
+    }
+    return true;
+}
+
+static VAStatus crystalhd_handle_picture_parameters(crystalhd_context &ctx,
+                                                    const uint8_t *data,
+                                                    size_t stride,
+                                                    size_t count)
+{
+    if (!data || !stride)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    for (size_t i = 0; i < count; ++i) {
+        if (stride < sizeof(VAPictureParameterBufferH264))
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+        const auto *pic = reinterpret_cast<const VAPictureParameterBufferH264 *>(data + i * stride);
+        ctx.last_pic_param = *pic;
+        ctx.have_pic_param = true;
+        crystalhd_update_pic_info_from_h264(ctx, *pic);
+    }
+    return VA_STATUS_SUCCESS;
 }
 
 static VAStatus crystalhd_QueryImageFormats(VADriverContextP, VAImageFormat *format_list,
