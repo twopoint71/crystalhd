@@ -1266,10 +1266,8 @@ static VAStatus crystalhd_AcquireBufferHandle(VADriverContextP ctx, VABufferID b
     uint32_t requested = buf_info->mem_type;
     uint32_t prime_mask = requested & kCrystalhdPrimeMemTypes;
     bool want_prime = prime_mask;
-    bool want_user = requested & VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR;
     if (!requested) {
         want_prime = image->derived && image->surface != VA_INVALID_SURFACE;
-        want_user = true;
     }
 
     if (want_prime) {
@@ -1291,8 +1289,7 @@ static VAStatus crystalhd_AcquireBufferHandle(VADriverContextP ctx, VABufferID b
             image->acquired_fd = fd;
             return VA_STATUS_SUCCESS;
         }
-        if (!want_user)
-            return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
+        // Fall back to USER_PTR if PRIME export is unavailable.
     }
 
     uint8_t *addr = crystalhd_image_data_ptr(drv, *image);
