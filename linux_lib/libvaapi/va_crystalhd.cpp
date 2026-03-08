@@ -39,6 +39,8 @@ struct crystalhd_config {
     uint32_t rt_format;
 };
 
+struct crystalhd_surface;
+
 struct crystalhd_context {
     VAContextID id;
     VAConfigID config_id;
@@ -91,6 +93,8 @@ struct crystalhd_context {
     bool have_pic_param = false;
     BC_PIC_INFO_BLOCK pending_pic_info{};
     bool have_pending_pic_info = false;
+    crystalhd_surface *current_target_surface = nullptr;
+    bool surface_waiting_output = false;
 
     struct surface_status {
         enum class state {
@@ -513,6 +517,13 @@ fail:
     return sts;
 }
 
+static void crystalhd_reset_submission_state(crystalhd_context &ctx)
+{
+    ctx.current_target_surface = nullptr;
+    ctx.surface_waiting_output = false;
+    ctx.have_pending_pic_info = false;
+}
+
 static VAStatus crystalhd_submit_bitstream(crystalhd_context &ctx,
                                            const uint8_t *data,
                                            size_t size)
@@ -741,6 +752,7 @@ static VAStatus crystalhd_BeginPicture(VADriverContextP ctx, VAContextID context
     va_ctx->pending_picture.reset();
     va_ctx->pending_picture.in_progress = true;
     va_ctx->pending_picture.target = render_target;
+    crystalhd_reset_submission_state(*va_ctx);
     if (render_target != VA_INVALID_SURFACE) {
         auto &state = va_ctx->surface_states[render_target];
         state.current_state = crystalhd_context::surface_status::state::submitted;
@@ -835,6 +847,9 @@ static VAStatus crystalhd_EndPicture(VADriverContextP ctx, VAContextID context)
             crystalhd_context::surface_status::state::pending_output;
 
     va_ctx->pending_picture.reset();
+    if (crystalhd_surface *surface =
+            crystalhd_find_surface(drv, va_ctx->pending_picture.target))
+        va_ctx->current_target_surface = surface;
     return VA_STATUS_SUCCESS;
 }
 
