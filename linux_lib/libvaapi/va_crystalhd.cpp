@@ -70,6 +70,7 @@ struct crystalhd_context {
         VABufferID last_pic_param = VA_INVALID_ID;
         std::deque<VABufferID> pending_slice_params;
         std::deque<VABufferID> pending_slice_data;
+        std::vector<uint8_t> pending_bitstream;
         std::vector<VASliceParameterBufferH264> parsed_slice_params;
         VAIQMatrixBufferH264 last_iq_matrix{};
         bool have_iq_matrix = false;
@@ -81,6 +82,7 @@ struct crystalhd_context {
             last_pic_param = VA_INVALID_ID;
             pending_slice_params.clear();
             pending_slice_data.clear();
+            pending_bitstream.clear();
             parsed_slice_params.clear();
             have_iq_matrix = false;
         }
@@ -583,9 +585,13 @@ static VAStatus crystalhd_process_slice_pair(crystalhd_context &ctx,
             return VA_STATUS_ERROR_UNIMPLEMENTED;
 
         const uint8_t *slice_ptr = slice_data_base + slice->slice_data_offset;
-        VAStatus status = crystalhd_submit_bitstream(ctx, slice_ptr, slice->slice_data_size);
-        if (status != VA_STATUS_SUCCESS)
-            return status;
+        try {
+            ctx.pending_picture.pending_bitstream.insert(
+                ctx.pending_picture.pending_bitstream.end(),
+                slice_ptr, slice_ptr + slice->slice_data_size);
+        } catch (const std::bad_alloc &) {
+            return VA_STATUS_ERROR_ALLOCATION_FAILED;
+        }
     }
 
     return VA_STATUS_SUCCESS;
@@ -606,6 +612,20 @@ static VAStatus crystalhd_process_pending_slices(crystalhd_context &ctx)
     }
 
     return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_submit_pending_picture(crystalhd_context &ctx)
+{
+    if (!ctx.have_pic_param || ctx.pending_picture.pending_bitstream.empty())
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (!ctx.current_target_surface)
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+
+    const auto &bitstream = ctx.pending_picture.pending_bitstream;
+    VAStatus status = crystalhd_submit_bitstream(ctx, bitstream.data(), bitstream.size());
+    if (status == VA_STATUS_SUCCESS)
+        ctx.surface_waiting_output = true;
+    return status;
 }
 
 static VAStatus crystalhd_CreateBuffer(VADriverContextP ctx, VAContextID context,
@@ -849,8 +869,11 @@ static VAStatus crystalhd_EndPicture(VADriverContextP ctx, VAContextID context)
         va_ctx->surface_states[target].current_state =
             crystalhd_context::surface_status::state::pending_output;
 
+    VAStatus submit_status = crystalhd_submit_pending_picture(*va_ctx);
+    if (submit_status != VA_STATUS_SUCCESS)
+        return submit_status;
+
     va_ctx->pending_picture.reset();
-    va_ctx->surface_waiting_output = va_ctx->current_target_surface != nullptr;
     return VA_STATUS_SUCCESS;
 }
 
