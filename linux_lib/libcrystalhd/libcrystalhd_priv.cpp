@@ -1121,6 +1121,8 @@ void DtsRelIoctlData(DTS_LIB_CONTEXT *Ctx, BC_IOCTL_DATA *pIoData)
 
 	pIoData->next = Ctx->pIoDataFreeHd;
     Ctx->pIoDataFreeHd = pIoData;
+	if (Ctx->ioctl_pool_in_use)
+		Ctx->ioctl_pool_in_use--;
 
 	DtsUnLock(Ctx);
 }
@@ -1136,10 +1138,14 @@ BC_IOCTL_DATA *DtsAllocIoctlData(DTS_LIB_CONTEXT *Ctx)
     if((temp=Ctx->pIoDataFreeHd) != NULL){
         Ctx->pIoDataFreeHd = Ctx->pIoDataFreeHd->next;
         memset(temp,0,sizeof(*temp));
+		Ctx->ioctl_pool_in_use++;
     }
 	DtsUnLock(Ctx);
 	if(!temp){
-		DebugLog_Trace(LDIL_DBG,"DtsAllocIoctlData Error\n");
+		DebugLog_Trace(LDIL_DBG,
+			"DtsAllocIoctlData Error (pool %u/%u in use)\n",
+			Ctx ? Ctx->ioctl_pool_in_use : 0,
+			Ctx ? Ctx->ioctl_pool_total : 0);
 	}
 
     return temp;
@@ -1169,6 +1175,10 @@ BC_STATUS DtsAllocMemPools(DTS_LIB_CONTEXT *Ctx)
 		}
 		DtsRelIoctlData(Ctx,pIoData);
 	}
+	Ctx->ioctl_pool_total = BC_IOCTL_DATA_POOL_SIZE;
+	Ctx->ioctl_pool_in_use = 0;
+	Ctx->ioctl_pool_total = BC_IOCTL_DATA_POOL_SIZE;
+	Ctx->ioctl_pool_in_use = 0;
 
 	Ctx->pOutData = (BC_IOCTL_DATA *) malloc(sizeof(BC_IOCTL_DATA));
 	if(!Ctx->pOutData){

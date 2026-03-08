@@ -213,6 +213,8 @@ typedef struct _DTS_LIB_CONTEXT{
 	uint32_t				State;			/* DIL's Run State */
 	int				DevHandle;		/* Driver handle */
 	BC_IOCTL_DATA	*pIoDataFreeHd;	/* IOCTL data pool head */
+	uint32_t		ioctl_pool_total;
+	uint32_t		ioctl_pool_in_use;
 	DTS_MPOOL_TYPE	*Mpools;		/* List of memory pools created */
 	uint32_t				MpoolCnt;		/* Number of entries */
 	uint32_t				CfgFlags;		/* Application specifi flags */
@@ -421,4 +423,3 @@ BC_STATUS DtsUpdateVidParams(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut);
 #endif
 
 #endif
-
