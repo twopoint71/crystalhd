@@ -89,6 +89,8 @@ struct crystalhd_context {
     BC_PIB_EXT_H264 user_pib_ext{};
     VAPictureParameterBufferH264 last_pic_param{};
     bool have_pic_param = false;
+    BC_PIC_INFO_BLOCK pending_pic_info{};
+    bool have_pending_pic_info = false;
 
     struct surface_status {
         enum class state {
@@ -1116,18 +1118,30 @@ static bool crystalhd_copy_image_to_surface(const uint8_t *src, uint32_t src_pit
                                 (surface.height + 1) / 2);
 }
 
-static bool crystalhd_update_pic_info_from_h264(crystalhd_context &ctx,
+static void crystalhd_update_pic_info_from_h264(crystalhd_context &ctx,
                                                 const VAPictureParameterBufferH264 &pic)
 {
     BC_PIB_EXT_H264 &ext = ctx.user_pib_ext;
     ext.valid = 0;
-    if (pic.seq_fields.bits.chroma_format_idc == 1 &&
-        ctx.surface_states.size()) {
+    if (pic.seq_fields.bits.chroma_format_idc == 1) {
         ext.valid |= H264_VALID_VUI;
         ext.chroma_top = pic.picture_height_in_mbs_minus1 + 1;
         ext.chroma_bottom = pic.picture_height_in_mbs_minus1 + 1;
     }
-    return true;
+
+    BC_PIC_INFO_BLOCK &info = ctx.pending_pic_info;
+    memset(&info, 0, sizeof(info));
+    uint32_t mb_width = pic.picture_width_in_mbs_minus1 + 1;
+    uint32_t mb_height = pic.picture_height_in_mbs_minus1 + 1;
+    info.width = mb_width * 16;
+    uint32_t frame_height = mb_height * 16;
+    if (!pic.seq_fields.bits.frame_mbs_only_flag)
+        frame_height *= 2;
+    info.height = frame_height;
+    info.chroma_format = 0x420;
+    info.flags = pic.seq_fields.bits.frame_mbs_only_flag ?
+        VDEC_FLAG_PROGRESSIVE_SRC : VDEC_FLAG_INTERLACED_SRC;
+    ctx.have_pending_pic_info = true;
 }
 
 static VAStatus crystalhd_handle_picture_parameters(crystalhd_context &ctx,
