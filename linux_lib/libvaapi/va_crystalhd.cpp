@@ -68,6 +68,9 @@ struct crystalhd_context {
         VABufferID last_pic_param = VA_INVALID_ID;
         std::deque<VABufferID> pending_slice_params;
         std::deque<VABufferID> pending_slice_data;
+        std::vector<VASliceParameterBufferH264> parsed_slice_params;
+        VAIQMatrixBufferH264 last_iq_matrix{};
+        bool have_iq_matrix = false;
 
         void reset()
         {
@@ -76,6 +79,8 @@ struct crystalhd_context {
             last_pic_param = VA_INVALID_ID;
             pending_slice_params.clear();
             pending_slice_data.clear();
+            parsed_slice_params.clear();
+            have_iq_matrix = false;
         }
     };
 
@@ -122,6 +127,10 @@ static VAStatus crystalhd_handle_picture_parameters(crystalhd_context &ctx,
                                                     const uint8_t *data,
                                                     size_t stride,
                                                     size_t count);
+static VAStatus crystalhd_handle_slice_parameters(crystalhd_context &ctx,
+                                                  const uint8_t *data,
+                                                  size_t stride,
+                                                  size_t count);
 
 struct crystalhd_surface {
     VASurfaceID id;
@@ -537,6 +546,15 @@ static VAStatus crystalhd_process_slice_pair(crystalhd_context &ctx,
     const uint8_t *slice_data_base = data_buffer->storage.data();
     const size_t slice_data_size = data_buffer->storage.size();
 
+    if (param_buffer->storage.size() >= param_buffer->element_size * param_buffer->num_elements) {
+        VAStatus status = crystalhd_handle_slice_parameters(ctx,
+                                                            param_base,
+                                                            param_buffer->element_size,
+                                                            param_buffer->num_elements);
+        if (status != VA_STATUS_SUCCESS)
+            return status;
+    }
+
     for (size_t i = 0; i < param_buffer->num_elements; ++i) {
         size_t offset = i * param_buffer->element_size;
         if (offset + sizeof(VASliceParameterBufferBase) > param_buffer->storage.size())
@@ -780,6 +798,13 @@ static VAStatus crystalhd_RenderPicture(VADriverContextP ctx, VAContextID contex
             status = crystalhd_process_pending_slices(*va_ctx);
             if (status != VA_STATUS_SUCCESS)
                 return status;
+            break;
+        case VAIQMatrixBufferType:
+            if (buffer->storage.size() < sizeof(VAIQMatrixBufferH264))
+                return VA_STATUS_ERROR_INVALID_BUFFER;
+            memcpy(&va_ctx->pending_picture.last_iq_matrix, buffer->storage.data(),
+                   sizeof(VAIQMatrixBufferH264));
+            va_ctx->pending_picture.have_iq_matrix = true;
             break;
         default:
             return VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE;
@@ -1120,6 +1145,31 @@ static VAStatus crystalhd_handle_picture_parameters(crystalhd_context &ctx,
         ctx.have_pic_param = true;
         crystalhd_update_pic_info_from_h264(ctx, *pic);
     }
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus crystalhd_handle_slice_parameters(crystalhd_context &ctx,
+                                                  const uint8_t *data,
+                                                  size_t stride,
+                                                  size_t count)
+{
+    if (!data || !stride)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (stride < sizeof(VASliceParameterBufferH264))
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+    auto &parsed = ctx.pending_picture.parsed_slice_params;
+    try {
+        parsed.reserve(parsed.size() + count);
+    } catch (const std::bad_alloc &) {
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        const auto *slice = reinterpret_cast<const VASliceParameterBufferH264 *>(data + i * stride);
+        parsed.push_back(*slice);
+    }
+
     return VA_STATUS_SUCCESS;
 }
 
