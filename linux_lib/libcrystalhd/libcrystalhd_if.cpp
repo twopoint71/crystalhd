@@ -1786,7 +1786,8 @@ DtsExportRxDmabufs(
 		return BC_STS_INSUFF_RES;
 
 	memcpy(&pIocData->u.RxDmabuf, desc, sizeof(*desc));
-	sts = DtsDrvCmd(Ctx, BCM_IOC_EXPORT_DMABUF, 0, pIocData, TRUE);
+	/* Keep the IOCTL buffer until we've copied the updated descriptors. */
+	sts = DtsDrvCmd(Ctx, BCM_IOC_EXPORT_DMABUF, 0, pIocData, FALSE);
 	if (sts == BC_STS_SUCCESS)
 		memcpy(desc, &pIocData->u.RxDmabuf, sizeof(*desc));
 
