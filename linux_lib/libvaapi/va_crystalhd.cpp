@@ -766,6 +766,7 @@ static VAStatus crystalhd_BeginPicture(VADriverContextP ctx, VAContextID context
                 if (reg_status != VA_STATUS_SUCCESS)
                     return reg_status;
             }
+            va_ctx->current_target_surface = surface;
         }
     }
     return VA_STATUS_SUCCESS;
@@ -849,7 +850,6 @@ static VAStatus crystalhd_EndPicture(VADriverContextP ctx, VAContextID context)
             crystalhd_context::surface_status::state::pending_output;
 
     va_ctx->pending_picture.reset();
-    va_ctx->current_target_surface = crystalhd_find_surface(drv, target);
     va_ctx->surface_waiting_output = va_ctx->current_target_surface != nullptr;
     return VA_STATUS_SUCCESS;
 }
@@ -905,6 +905,7 @@ static VAStatus crystalhd_SyncSurface(VADriverContextP ctx, VASurfaceID render_t
 
     state.current_state = crystalhd_context::surface_status::state::idle;
     state.timestamp = proc_out.PicInfo.timeStamp;
+    va_ctx->surface_waiting_output = false;
     return VA_STATUS_SUCCESS;
 }
 
