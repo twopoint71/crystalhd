@@ -12,9 +12,11 @@
 - Updated makefile to use `M=` builds and `ccflags-y` include paths so DKMS works with current kernels.
 - Switched DMA API usage to `dma_*` helpers and `pin_user_pages`/`unpin_user_pages` for Linux ≥ 5.10.
 - Replaced legacy `rdtscll` calls with `ktime_get_ns()` and removed obsolete PCI APIs.
+- VA-API shim now builds Annex-B bitstreams (with start codes) and submits them via `DtsProcInput`, tracks DMA/malloc surfaces through decode, and logs whether output came back via DMA-BUF or memcpy. DMA buffers/contexts are released on teardown to keep the RX pool healthy.
 
 ## Follow-ups / cleanup ideas
 - Audit non-driver directories (`examples`, `filters/gst`, `linux_lib`) to decide whether to archive or drop them from DKMS packaging.
 - Simplify the remaining `#if LINUX_VERSION_CODE` guards now that only 5.x/6.x kernels are in scope.
 - Refresh README instructions for DKMS + modern distros and ensure firmware install script still matches current udev paths.
 - Consider adding CI or a simple `make dkms` wrapper to automate the kernel tree copy + module build.
+- Finish H.264 plumbing in `linux_lib/libvaapi/va_crystalhd.cpp`: cache SPS/PPS, prepend them before IDR slices, recycle CrystalHD buffers immediately after `vaSyncSurface`, and pipe PIB metadata back to VA queries. VLC still needs to be coaxed into using VA decode; current traces stop after surface creation.

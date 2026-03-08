@@ -2,20 +2,22 @@
 
 ## Current Status (Mar 7, 2026)
 - `linux_lib/libvaapi/va_crystalhd.cpp` now tracks configs/contexts internally and wires up basic VA entrypoints for profile/query plus context open/close using `DtsDeviceOpen`/`DtsDeviceClose`.
-- All surface/buffer/picture operations are still routed through the "unimplemented" stub helper, so VA clients cannot actually submit streams or retrieve decoded frames yet.
-- Decoder state is initialized only when contexts are created; there is not yet any codec-specific configuration (no `DtsOpenDecoder`, `DtsSetInputFormat`, etc.).
+- H.264 picture, slice, and IQ buffers are cached per submission; start codes are prepended so the aggregated bitstream resembles Annex-B before being sent to CrystalHD via `DtsProcInput`.
+- `vaSyncSurface`/DMA paths call `DtsProcOutput`/`DtsProcOutputNoCopy`, copy or reuse decoded frames, and log whether DMA-BUF or memcpy was used.
+- Decoder state is initialized only when contexts are created; there is not yet any codec-specific configuration (no `DtsOpenDecoder`, `DtsSetInputFormat`, etc.), and SPS/PPS NALs still need to be injected explicitly.
+- VLC traces currently stop after surface probing (`vaDeriveImage`/`vaAcquireBufferHandle`); no `vaCreateContext`/`vaRenderPicture` traffic has been observed yet.
 
 ## Near-Term TODOs
 1. **VASurface plumbing**
-   - Add per-context surface table storing CrystalHD backing buffers, dimensions, and ownership state.
-   - Implement `vaCreateSurfaces`/`vaDestroySurfaces` (and 2-variant) to allocate/free those buffers.
-   - Decide how decoded frames will land in VA surfaces (copy from `BC_DTS_PROC_OUT` into surface buffer vs. share DMA buffer).
+   - Add per-context surface table storing CrystalHD backing buffers, dimensions, and ownership state. *Done.*
+   - Implement `vaCreateSurfaces`/`vaDestroySurfaces` (and 2-variant) to allocate/free those buffers. *Done.*
+   - Decide how decoded frames will land in VA surfaces (copy vs. DMA-BUF). *Both paths exist; need release + metadata plumbing.*
 2. **Buffer ingestion**
-   - Track submitted VA buffers (picture params, IQ matrices, slices) and translate them into CrystalHD bitstream packets.
+   - Track submitted VA buffers (picture params, IQ matrices, slices) and translate them into CrystalHD bitstream packets. *Caching in place; need SPS/PPS injection and validation with a real client.*
 3. **Picture submission**
-   - Implement `vaBeginPicture`/`vaRenderPicture`/`vaEndPicture` to feed aggregated bitstreams to `DtsProcInput` and remember which surface to fill.
+   - Implement `vaBeginPicture`/`vaRenderPicture`/`vaEndPicture` to feed aggregated bitstreams to `DtsProcInput` and remember which surface to fill. *Bitstream submission exists; waiting on SPS/PPS.*
 4. **Output path**
-   - Implement `vaSyncSurface`/`vaQuerySurfaceStatus` to call `DtsProcOutput`, copy data into the pending surface, and propagate metadata/errors.
+   - Implement `vaSyncSurface`/`vaQuerySurfaceStatus` to call `DtsProcOutput`, copy data into the pending surface, and propagate metadata/errors. *Memcpy/DMA flows exist; still need to call `DtsReleaseOutputBuffs` after sync and expose PIC info back to VA.*
 5. **Codec coverage**
    - Start with H.264 Main/High/Constrained Baseline as implemented today; leave hooks to extend to MPEG-2/VC-1 later.
 
@@ -57,6 +59,10 @@ The malloc-backed surface path is safe but leaves a full-frame memcpy on every `
 - Do we need two dma-bufs per surface (one for Y, one for UV) or can we expose a single fd with plane offsets? Kernel RX descriptors already hold both addresses, so a single export with metadata seems doable.
 - What format do downstream compositors expect? If they insist on modifiers, we may need to advertise `DRM_FORMAT_NV12` with linear modifier.
 - We probably need a userspace helper to dup/close the fds per VA context lifetime; figure out how to integrate that with the existing `DtsInitInterface` teardown path.
+- Handle SPS/PPS/SEI injection so CrystalHD receives full GOP state.
+- Ensure `DtsReleaseOutputBuffs` is called after `vaSyncSurface` (and on surface teardown) so DMA RX buffers recycle immediately.
+- Propagate `BC_PIC_INFO_BLOCK` metadata back to VA (timestamps, flags) so clients can query it.
+- Get VLC (or another VA client) actually decoding via VAAPI so we can test the code path end-to-end; current traces only show probing.
 
 For now we should prototype the IOCTL + exporter in the driver and teach `va_crystalhd` to advertise DMA-BUF support under a feature flag. Once that is stable we can flip the default for low-end builds where memcpy is too expensive.
 
