@@ -287,6 +287,18 @@ static void crystalhd_surface_release_dmabuf(crystalhd_driver_state *drv,
     surface.dmabuf_in_use = false;
 }
 
+static void crystalhd_mark_surface_ready(crystalhd_context &ctx,
+                                         crystalhd_surface &surface,
+                                         const BC_DTS_PROC_OUT &proc_out)
+{
+    auto &state = ctx.surface_states[surface.id];
+    state.current_state = crystalhd_context::surface_status::state::idle;
+    state.timestamp = proc_out.PicInfo.timeStamp;
+    ctx.surface_waiting_output = false;
+    if (ctx.current_target_surface == &surface)
+        ctx.current_target_surface = nullptr;
+}
+
 static crystalhd_context::crystalhd_va_buffer *crystalhd_alloc_buffer(crystalhd_driver_state *drv,
                                                                       crystalhd_context &ctx)
 {
@@ -927,9 +939,7 @@ static VAStatus crystalhd_SyncSurface(VADriverContextP ctx, VASurfaceID render_t
     if (!(proc_out.PoutFlags & BC_POUT_FLAGS_PIB_VALID))
         return VA_STATUS_ERROR_DECODING_ERROR;
 
-    state.current_state = crystalhd_context::surface_status::state::idle;
-    state.timestamp = proc_out.PicInfo.timeStamp;
-    va_ctx->surface_waiting_output = false;
+    crystalhd_mark_surface_ready(*va_ctx, *surface, proc_out);
     return VA_STATUS_SUCCESS;
 }
 
@@ -1002,9 +1012,7 @@ static VAStatus crystalhd_acquire_dmabuf_frame(crystalhd_driver_state *drv,
         return VA_STATUS_ERROR_OPERATION_FAILED;
     }
 
-    auto &state = ctx.surface_states[matched->id];
-    state.current_state = crystalhd_context::surface_status::state::idle;
-    state.timestamp = proc_out.PicInfo.timeStamp;
+    crystalhd_mark_surface_ready(ctx, *matched, proc_out);
     matched->dmabuf_in_use = true;
     matched->last_context = ctx.id;
     return VA_STATUS_SUCCESS;
