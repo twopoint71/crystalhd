@@ -97,6 +97,7 @@ struct crystalhd_context {
     bool have_pending_pic_info = false;
     crystalhd_surface *current_target_surface = nullptr;
     bool surface_waiting_output = false;
+    BC_DTS_PROC_OUT last_proc_out{};
 
     struct surface_status {
         enum class state {
