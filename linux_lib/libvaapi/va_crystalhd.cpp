@@ -803,7 +803,8 @@ static VAStatus crystalhd_BeginPicture(VADriverContextP ctx, VAContextID context
         if (surface) {
             surface->last_context = va_ctx->id;
             if (surface->dmabuf_backed) {
-                crystalhd_surface_release_dmabuf(drv, *surface);
+                if (surface->dmabuf_in_use)
+                    crystalhd_surface_release_dmabuf(drv, *surface);
                 VAStatus reg_status = crystalhd_surface_register_dmabuf(*va_ctx, *surface);
                 if (reg_status != VA_STATUS_SUCCESS)
                     return reg_status;
