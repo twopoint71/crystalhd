@@ -26,7 +26,15 @@
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_priv.h"
 
-static constexpr bool kCrystalhdEnableDmabufSurfaces = true;
+static bool crystalhd_dmabuf_enabled()
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *disable = getenv("CRYSTALHD_DISABLE_DMABUF");
+        cached = disable ? 0 : 1;
+    }
+    return cached == 1;
+}
 static constexpr uint32_t kCrystalhdPrimeMemTypes =
     VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME |
     VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 |
@@ -291,7 +299,7 @@ static void crystalhd_surface_release_dmabuf(crystalhd_driver_state *drv,
 static void crystalhd_try_upgrade_surfaces(crystalhd_driver_state *drv,
                                            crystalhd_context &ctx)
 {
-    if (!drv || !kCrystalhdEnableDmabufSurfaces)
+    if (!drv || !crystalhd_dmabuf_enabled())
         return;
 
     auto *dts_ctx = crystalhd_dts_ctx(ctx.device);
